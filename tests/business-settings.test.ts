@@ -122,6 +122,12 @@ test('updated tax affects the next quote while saved sale and receipt snapshots 
     const nextQuote = sales.quote([{ productId: product.id, quantity: 1 }])
     assert.equal(nextQuote.taxCents, 0)
     assert.equal(nextQuote.totalCents, 200)
+    const secondCompleted = sales.completeCheckout({
+      items: [{ productId: product.id, quantity: 1 }],
+      paymentMethod: 'card'
+    })
+    assert.equal(secondCompleted.sale.taxCents, 0)
+    assert.equal(secondCompleted.sale.totalCents, 200)
 
     let printedHtml = ''
     const receipts = createReceiptService({
