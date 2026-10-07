@@ -5,6 +5,10 @@ import { openDatabase } from './database/connection'
 import { createRepositories } from './database/repositories'
 import type { PosDatabase } from './database/types'
 import { createProductService, toProductResult } from './product-service'
+import {
+  createBusinessSettingsService,
+  toBusinessSettingsResult
+} from './business-settings-service'
 import { printReceiptHtml } from './electron-printer'
 import { createReceiptService, toReceiptResult } from './receipt-service'
 import { createSalesService, toSalesResult } from './sales-service'
@@ -12,6 +16,7 @@ import { createSalesService, toSalesResult } from './sales-service'
 let database: PosDatabase | undefined
 let repositories: ReturnType<typeof createRepositories> | undefined
 let productService: ReturnType<typeof createProductService> | undefined
+let businessSettingsService: ReturnType<typeof createBusinessSettingsService> | undefined
 let salesService: ReturnType<typeof createSalesService> | undefined
 let receiptService: ReturnType<typeof createReceiptService> | undefined
 let mainWindow: BrowserWindow | undefined
@@ -92,6 +97,15 @@ function registerReceiptHandlers(): void {
   )
 }
 
+function registerBusinessSettingsHandlers(): void {
+  ipcMain.handle(IPC_CHANNELS.settingsGetBusiness, () =>
+    toBusinessSettingsResult(() => requireBusinessSettingsService().get())
+  )
+  ipcMain.handle(IPC_CHANNELS.settingsSaveBusiness, (_event, settings: unknown) =>
+    toBusinessSettingsResult(() => requireBusinessSettingsService().save(settings))
+  )
+}
+
 function requireProductService(): NonNullable<typeof productService> {
   if (!productService) throw new Error('The product service is not ready.')
   return productService
@@ -107,12 +121,18 @@ function requireReceiptService(): NonNullable<typeof receiptService> {
   return receiptService
 }
 
+function requireBusinessSettingsService(): NonNullable<typeof businessSettingsService> {
+  if (!businessSettingsService) throw new Error('The business settings service is not ready.')
+  return businessSettingsService
+}
+
 app.whenReady().then(() => {
   try {
     database = openDatabase(join(app.getPath('userData'), 'pos-system.sqlite'))
     repositories = createRepositories(database)
     repositories.settings.get()
     productService = createProductService(repositories.products)
+    businessSettingsService = createBusinessSettingsService(repositories.settings)
     salesService = createSalesService(repositories.sales, repositories.settings)
     receiptService = createReceiptService({
       sales: repositories.sales,
@@ -123,6 +143,7 @@ app.whenReady().then(() => {
   } catch (error) {
     repositories = undefined
     productService = undefined
+    businessSettingsService = undefined
     salesService = undefined
     receiptService = undefined
     database?.close()
@@ -136,6 +157,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle(IPC_CHANNELS.appGetVersion, () => app.getVersion())
   registerProductHandlers()
+  registerBusinessSettingsHandlers()
   registerSalesHandlers()
   registerReceiptHandlers()
   createWindow()

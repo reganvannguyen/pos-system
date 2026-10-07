@@ -50,7 +50,7 @@ npm run typecheck
 npm run build
 ```
 
-The secure desktop shell is in place. POS now supports an in-memory cart with SKU entry, quantity controls, and a CAD subtotal. Product management is implemented; Sales and Settings remain placeholders while checkout, sales persistence, and printing are later milestones.
+The secure desktop shell, product catalog, checkout, sales history, receipt printing, and business settings are implemented. The POS uses a keyboard-first register layout with live tax totals and cash/card confirmation. Data remains local in SQLite.
 
 ## Windows checks from a Mac
 
@@ -60,4 +60,4 @@ Use a physical Windows 10/11 x64 PC and the receipt printer for the release gate
 
 ## Status
 
-M1–M4 are implemented locally. Windows VM validation and the physical Windows/printer release gate remain pending.
+M1–M7 are implemented locally. Windows installer builds run in CI. Interactive Windows install checks and the physical Windows/printer release gate remain pending until that hardware is available.

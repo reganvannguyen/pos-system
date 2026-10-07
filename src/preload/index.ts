@@ -23,7 +23,9 @@ const posApi: PosApi = {
   },
   settings: {
     getReceipt: () => ipcRenderer.invoke(IPC_CHANNELS.settingsGetReceipt),
-    saveReceipt: (settings) => ipcRenderer.invoke(IPC_CHANNELS.settingsSaveReceipt, settings)
+    saveReceipt: (settings) => ipcRenderer.invoke(IPC_CHANNELS.settingsSaveReceipt, settings),
+    getBusiness: () => ipcRenderer.invoke(IPC_CHANNELS.settingsGetBusiness),
+    saveBusiness: (settings) => ipcRenderer.invoke(IPC_CHANNELS.settingsSaveBusiness, settings)
   },
   receipts: {
     print: (saleId) => ipcRenderer.invoke(IPC_CHANNELS.receiptsPrint, saleId)

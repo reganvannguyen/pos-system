@@ -12,6 +12,8 @@ export const IPC_CHANNELS = {
   printersList: 'printers:list',
   settingsGetReceipt: 'settings:get-receipt',
   settingsSaveReceipt: 'settings:save-receipt',
+  settingsGetBusiness: 'settings:get-business',
+  settingsSaveBusiness: 'settings:save-business',
   receiptsPrint: 'receipts:print'
 } as const
 
@@ -128,6 +130,27 @@ export interface ReceiptSettings {
   autoPrintReceipt: boolean
 }
 
+export interface BusinessSettings {
+  businessName: string
+  taxRateBasisPoints: number
+}
+
+export interface BusinessSettingsInput {
+  businessName: string
+  taxRatePercent: string
+}
+
+export type BusinessSettingsField = 'businessName' | 'taxRatePercent'
+
+export interface BusinessSettingsApiError {
+  code: 'invalid-input' | 'internal'
+  message: string
+  field?: BusinessSettingsField
+}
+
+export type BusinessSettingsResult<T> =
+  { ok: true; data: T } | { ok: false; error: BusinessSettingsApiError }
+
 export interface ReceiptPrintResult {
   saleId: number
   sentToPrinter: true
@@ -171,6 +194,8 @@ export interface PosApi {
   settings: {
     getReceipt(): Promise<ReceiptResult<ReceiptSettings>>
     saveReceipt(settings: ReceiptSettings): Promise<ReceiptResult<ReceiptSettings>>
+    getBusiness(): Promise<BusinessSettingsResult<BusinessSettings>>
+    saveBusiness(settings: BusinessSettingsInput): Promise<BusinessSettingsResult<BusinessSettings>>
   }
   receipts: {
     print(saleId: number): Promise<ReceiptResult<ReceiptPrintResult>>
