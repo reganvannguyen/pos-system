@@ -151,10 +151,10 @@ erDiagram
 ```sql
 CREATE TABLE products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sku TEXT NOT NULL UNIQUE,
+    sku TEXT NOT NULL,
     name TEXT NOT NULL,
     price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
-    stock_quantity INTEGER,
+    stock_quantity INTEGER CHECK (stock_quantity IS NULL OR stock_quantity >= 0),
     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -179,13 +179,13 @@ CREATE TABLE sale_items (
     quantity INTEGER NOT NULL CHECK (quantity > 0),
     line_total_cents INTEGER NOT NULL CHECK (line_total_cents >= 0),
     FOREIGN KEY (sale_id) REFERENCES sales(id),
-    FOREIGN KEY (product_id) REFERENCES products(id)
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
 );
 
 CREATE TABLE settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     business_name TEXT NOT NULL DEFAULT 'My Store',
-    tax_rate_basis_points INTEGER NOT NULL DEFAULT 0,
+    tax_rate_basis_points INTEGER NOT NULL DEFAULT 0 CHECK (tax_rate_basis_points >= 0),
     printer_name TEXT,
     auto_print_receipt INTEGER NOT NULL DEFAULT 0
         CHECK (auto_print_receipt IN (0, 1))
@@ -233,4 +233,10 @@ Example:
 003_add_receipt_fields.sql
 ```
 
-The app should store or inspect a schema version and apply pending migrations on startup before normal use.
+The app stores its schema version in SQLite's `user_version` pragma and applies pending migrations
+before opening the main window. Each migration and its version update run in one transaction. The
+current initial schema is `src/main/database/migrations/001_initial_schema.sql`; add a new numbered
+migration for later schema changes rather than editing a migration that has shipped.
+
+At runtime, the main process opens `pos-system.sqlite` in Electron's `userData` directory and enables
+foreign key checks and write-ahead logging for that connection.

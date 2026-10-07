@@ -1,6 +1,12 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { join } from 'node:path'
 import { IPC_CHANNELS } from '../shared/pos-api'
+import { openDatabase } from './database/connection'
+import { createRepositories } from './database/repositories'
+import type { PosDatabase } from './database/types'
+
+let database: PosDatabase | undefined
+let repositories: ReturnType<typeof createRepositories> | undefined
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -27,6 +33,19 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  try {
+    database = openDatabase(join(app.getPath('userData'), 'pos-system.sqlite'))
+    repositories = createRepositories(database)
+    repositories.settings.get()
+  } catch (error) {
+    repositories = undefined
+    database?.close()
+    const message = error instanceof Error ? error.message : String(error)
+    dialog.showErrorBox('Unable to open the local database', message)
+    app.quit()
+    return
+  }
+
   app.setAppUserModelId('com.regannguyen.possystem')
 
   ipcMain.handle(IPC_CHANNELS.appGetVersion, () => app.getVersion())
@@ -39,4 +58,8 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('before-quit', () => {
+  if (database?.open) database.close()
 })
