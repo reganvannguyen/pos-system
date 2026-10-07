@@ -11,6 +11,12 @@ const posApi: PosApi = {
     create: (input) => ipcRenderer.invoke(IPC_CHANNELS.productsCreate, input),
     update: (id, input) => ipcRenderer.invoke(IPC_CHANNELS.productsUpdate, id, input),
     setActive: (id, isActive) => ipcRenderer.invoke(IPC_CHANNELS.productsSetActive, id, isActive)
+  },
+  sales: {
+    quote: (items) => ipcRenderer.invoke(IPC_CHANNELS.salesQuote, items),
+    completeCheckout: (request) => ipcRenderer.invoke(IPC_CHANNELS.salesCompleteCheckout, request),
+    listRecent: () => ipcRenderer.invoke(IPC_CHANNELS.salesListRecent),
+    getById: (id) => ipcRenderer.invoke(IPC_CHANNELS.salesGetById, id)
   }
 }
 

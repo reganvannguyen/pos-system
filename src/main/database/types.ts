@@ -22,6 +22,17 @@ export interface SaleRecord {
   created_at: string
 }
 
+export interface SaleItemRecord {
+  id: number
+  sale_id: number
+  product_id: number | null
+  sku: string
+  product_name: string
+  unit_price_cents: number
+  quantity: number
+  line_total_cents: number
+}
+
 export interface SettingsRecord {
   id: 1
   business_name: string

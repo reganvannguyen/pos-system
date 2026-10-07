@@ -1,15 +1,13 @@
 import { useEffect, useState } from 'react'
 import PosScreen from './PosScreen'
 import ProductsScreen from './ProductsScreen'
+import SalesScreen from './SalesScreen'
 import type { CartLine } from './cart'
 
 const views = ['POS', 'Products', 'Sales', 'Settings'] as const
 type View = (typeof views)[number]
 
-const viewDescriptions: Record<Exclude<View, 'POS' | 'Products'>, string> = {
-  Sales: 'Completed sales and receipt reprints will appear here.',
-  Settings: 'Store details, tax, and printer options will be configured here.'
-}
+const settingsDescription = 'Store details, tax, and printer options will be configured here.'
 
 function App(): React.JSX.Element {
   const [activeView, setActiveView] = useState<View>('POS')
@@ -67,6 +65,8 @@ function App(): React.JSX.Element {
           <PosScreen cart={cart} setCart={setCart} />
         ) : activeView === 'Products' ? (
           <ProductsScreen />
+        ) : activeView === 'Sales' ? (
+          <SalesScreen />
         ) : (
           <section className="content-card" aria-labelledby="welcome-title">
             <div className="content-icon" aria-hidden="true">
@@ -74,7 +74,7 @@ function App(): React.JSX.Element {
             </div>
             <p className="eyebrow">Project foundation</p>
             <h2 id="welcome-title">{activeView}</h2>
-            <p className="content-copy">{viewDescriptions[activeView]}</p>
+            <p className="content-copy">{settingsDescription}</p>
             <span className="milestone-tag">M1 · Application shell</span>
           </section>
         )}

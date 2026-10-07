@@ -5,10 +5,12 @@ import { openDatabase } from './database/connection'
 import { createRepositories } from './database/repositories'
 import type { PosDatabase } from './database/types'
 import { createProductService, toProductResult } from './product-service'
+import { createSalesService, toSalesResult } from './sales-service'
 
 let database: PosDatabase | undefined
 let repositories: ReturnType<typeof createRepositories> | undefined
 let productService: ReturnType<typeof createProductService> | undefined
+let salesService: ReturnType<typeof createSalesService> | undefined
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -52,9 +54,29 @@ function registerProductHandlers(): void {
   )
 }
 
+function registerSalesHandlers(): void {
+  ipcMain.handle(IPC_CHANNELS.salesQuote, (_event, items: unknown) =>
+    toSalesResult(() => requireSalesService().quote(items))
+  )
+  ipcMain.handle(IPC_CHANNELS.salesCompleteCheckout, (_event, request: unknown) =>
+    toSalesResult(() => requireSalesService().completeCheckout(request))
+  )
+  ipcMain.handle(IPC_CHANNELS.salesListRecent, () =>
+    toSalesResult(() => requireSalesService().listRecent())
+  )
+  ipcMain.handle(IPC_CHANNELS.salesGetById, (_event, id: unknown) =>
+    toSalesResult(() => requireSalesService().getById(id))
+  )
+}
+
 function requireProductService(): NonNullable<typeof productService> {
   if (!productService) throw new Error('The product service is not ready.')
   return productService
+}
+
+function requireSalesService(): NonNullable<typeof salesService> {
+  if (!salesService) throw new Error('The sales service is not ready.')
+  return salesService
 }
 
 app.whenReady().then(() => {
@@ -63,9 +85,11 @@ app.whenReady().then(() => {
     repositories = createRepositories(database)
     repositories.settings.get()
     productService = createProductService(repositories.products)
+    salesService = createSalesService(repositories.sales)
   } catch (error) {
     repositories = undefined
     productService = undefined
+    salesService = undefined
     database?.close()
     const message = error instanceof Error ? error.message : String(error)
     dialog.showErrorBox('Unable to open the local database', message)
@@ -77,6 +101,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle(IPC_CHANNELS.appGetVersion, () => app.getVersion())
   registerProductHandlers()
+  registerSalesHandlers()
   createWindow()
 
   app.on('activate', () => {
