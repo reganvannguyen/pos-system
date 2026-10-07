@@ -13,7 +13,7 @@
     "start": "electron-vite preview",
     "build": "npm run typecheck && electron-vite build",
     "build:win": "npm run build && electron-builder --win nsis --x64 --publish never",
-    "test": "tsx --test tests/product-management.test.ts",
+    "test": "tsx --test tests/product-management.test.ts tests/cart.test.ts",
     "lint": "eslint --cache .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

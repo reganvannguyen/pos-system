@@ -50,7 +50,7 @@ npm run typecheck
 npm run build
 ```
 
-The first milestone is the secure desktop shell. POS is the default screen; Products, Sales, and Settings are navigation placeholders until their roadmap milestones are implemented.
+The secure desktop shell is in place. POS now supports an in-memory cart with SKU entry, quantity controls, and a CAD subtotal. Product management is implemented; Sales and Settings remain placeholders while checkout, sales persistence, and printing are later milestones.
 
 ## Windows checks from a Mac
 
@@ -60,4 +60,4 @@ Use a physical Windows 10/11 x64 PC and the receipt printer for the release gate
 
 ## Status
 
-M1 foundation is implemented locally. Windows installer validation and the Windows hardware release gate remain pending.
+M1–M4 are implemented locally. Windows VM validation and the physical Windows/printer release gate remain pending.

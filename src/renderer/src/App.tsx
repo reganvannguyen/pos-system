@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
+import PosScreen from './PosScreen'
 import ProductsScreen from './ProductsScreen'
+import type { CartLine } from './cart'
 
 const views = ['POS', 'Products', 'Sales', 'Settings'] as const
 type View = (typeof views)[number]
 
-const viewDescriptions: Record<View, string> = {
-  POS: 'Checkout tools will be added in the POS milestones.',
-  Products: 'Your product catalog will be managed here.',
+const viewDescriptions: Record<Exclude<View, 'POS' | 'Products'>, string> = {
   Sales: 'Completed sales and receipt reprints will appear here.',
   Settings: 'Store details, tax, and printer options will be configured here.'
 }
@@ -14,6 +14,7 @@ const viewDescriptions: Record<View, string> = {
 function App(): React.JSX.Element {
   const [activeView, setActiveView] = useState<View>('POS')
   const [version, setVersion] = useState('Loading…')
+  const [cart, setCart] = useState<CartLine[]>([])
 
   useEffect(() => {
     void window.pos.app
@@ -62,17 +63,17 @@ function App(): React.JSX.Element {
           <span className="version-label">Version {version}</span>
         </header>
 
-        {activeView === 'Products' ? (
+        {activeView === 'POS' ? (
+          <PosScreen cart={cart} setCart={setCart} />
+        ) : activeView === 'Products' ? (
           <ProductsScreen />
         ) : (
           <section className="content-card" aria-labelledby="welcome-title">
             <div className="content-icon" aria-hidden="true">
-              {activeView === 'POS' ? '＋' : activeView.charAt(0)}
+              {activeView.charAt(0)}
             </div>
             <p className="eyebrow">Project foundation</p>
-            <h2 id="welcome-title">
-              {activeView === 'POS' ? 'POS foundation is ready' : activeView}
-            </h2>
+            <h2 id="welcome-title">{activeView}</h2>
             <p className="content-copy">{viewDescriptions[activeView]}</p>
             <span className="milestone-tag">M1 · Application shell</span>
           </section>
