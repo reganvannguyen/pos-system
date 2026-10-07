@@ -61,7 +61,7 @@ Stores the line items belonging to a completed sale.
 
 The SKU, name, and price are deliberately copied into `sale_items`. Historical receipts must remain correct even if a product is renamed, repriced, or removed later.
 
-An SKU remains reserved after its product is deactivated. The unique constraint applies across active and inactive products, so deactivated SKUs cannot be reassigned.
+SKUs are trimmed and stored uppercase before database writes. An SKU remains reserved after its product is deactivated, and the unique constraint applies across active and inactive products. Changing an active product's SKU releases its previous value.
 
 ### settings
 

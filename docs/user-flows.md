@@ -105,6 +105,8 @@ If printing fails, the sale remains recorded and the user can reprint it from Sa
 
 ## 6. Product Management Flow
 
+The Products screen searches product names and SKUs and can show active or inactive products. SKUs are saved uppercase after trimming surrounding whitespace. Prices are entered in CAD; blank stock means untracked, while zero is a tracked quantity.
+
 ```text
 Products screen
       |
@@ -120,9 +122,7 @@ Products screen
       +-- Deactivate Product
 ```
 
-A duplicate SKU must be rejected.
-
-Deactivating a product prevents new checkout lookup but must not alter historical sales.
+A duplicate SKU must be rejected even when the existing product is inactive. Changing a product's SKU releases the previous value. Deactivation requires confirmation, prevents new checkout lookup, and preserves the product and its current SKU. The inactive-products view lets the user edit or reactivate it without changing historical sales.
 
 ## 7. Sales History Flow
 

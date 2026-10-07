@@ -12,10 +12,13 @@ The user must be able to:
 
 - Create a product.
 - Assign a unique SKU/code to a product.
+- Normalize SKUs by trimming surrounding whitespace and converting to uppercase.
 - Set the product name and price.
 - Optionally track stock quantity.
 - Edit an existing product.
-- Remove or deactivate a product.
+- Change a product's SKU; its previous SKU becomes available.
+- Deactivate a product without freeing its current SKU.
+- Reactivate a deactivated product.
 
 ### POS / Checkout
 

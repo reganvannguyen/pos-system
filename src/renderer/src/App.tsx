@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import ProductsScreen from './ProductsScreen'
 
 const views = ['POS', 'Products', 'Sales', 'Settings'] as const
 type View = (typeof views)[number]
@@ -61,17 +62,21 @@ function App(): React.JSX.Element {
           <span className="version-label">Version {version}</span>
         </header>
 
-        <section className="content-card" aria-labelledby="welcome-title">
-          <div className="content-icon" aria-hidden="true">
-            {activeView === 'POS' ? '＋' : activeView.charAt(0)}
-          </div>
-          <p className="eyebrow">Project foundation</p>
-          <h2 id="welcome-title">
-            {activeView === 'POS' ? 'POS foundation is ready' : activeView}
-          </h2>
-          <p className="content-copy">{viewDescriptions[activeView]}</p>
-          <span className="milestone-tag">M1 · Application shell</span>
-        </section>
+        {activeView === 'Products' ? (
+          <ProductsScreen />
+        ) : (
+          <section className="content-card" aria-labelledby="welcome-title">
+            <div className="content-icon" aria-hidden="true">
+              {activeView === 'POS' ? '＋' : activeView.charAt(0)}
+            </div>
+            <p className="eyebrow">Project foundation</p>
+            <h2 id="welcome-title">
+              {activeView === 'POS' ? 'POS foundation is ready' : activeView}
+            </h2>
+            <p className="content-copy">{viewDescriptions[activeView]}</p>
+            <span className="milestone-tag">M1 · Application shell</span>
+          </section>
+        )}
       </main>
     </div>
   )

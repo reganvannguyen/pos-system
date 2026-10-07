@@ -13,6 +13,7 @@
     "start": "electron-vite preview",
     "build": "npm run typecheck && electron-vite build",
     "build:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "test": "tsx --test tests/product-management.test.ts",
     "lint": "eslint --cache .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -36,6 +37,7 @@
     "prettier": "^3.7.4",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.71.1",
     "vite": "^7.2.6"
