@@ -40,6 +40,7 @@ See the `docs/` directory:
 - `architecture.md`
 - `database-design.md`
 - `user-flows.md`
+- `ui-ux.md`
 - `receipt-printing.md`
 - `development-roadmap.md`
 
