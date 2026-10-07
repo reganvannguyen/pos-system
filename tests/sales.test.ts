@@ -6,6 +6,7 @@ import { test } from 'node:test'
 import Database from 'better-sqlite3'
 import { createProductRepository } from '../src/main/database/repositories/products'
 import { createSalesRepository } from '../src/main/database/repositories/sales'
+import { createSettingsRepository } from '../src/main/database/repositories/settings'
 import { createSalesService, toSalesResult } from '../src/main/sales-service'
 
 const schema = readFileSync(
@@ -17,6 +18,7 @@ function withSales(
   run: (context: {
     database: Database.Database
     products: ReturnType<typeof createProductRepository>
+    settings: ReturnType<typeof createSettingsRepository>
     service: ReturnType<typeof createSalesService>
   }) => void
 ): void {
@@ -24,10 +26,11 @@ function withSales(
   database.pragma('foreign_keys = ON')
   database.exec(schema)
   const products = createProductRepository(database)
-  const service = createSalesService(createSalesRepository(database))
+  const settings = createSettingsRepository(database)
+  const service = createSalesService(createSalesRepository(database), settings)
 
   try {
-    run({ database, products, service })
+    run({ database, products, settings, service })
   } finally {
     database.close()
   }
@@ -113,14 +116,14 @@ test('checkout resolves current price and stores historical line snapshots', () 
       priceCents: 250,
       stockQuantity: 3
     })
-    const historicalSale = service.getById(sale.id)
+    const historicalSale = service.getById(sale.sale.id)
 
-    assert.equal(sale.subtotalCents, 250)
-    assert.equal(sale.items[0]?.sku, 'COFFEE')
-    assert.equal(sale.items[0]?.name, 'Large coffee')
-    assert.equal(sale.items[0]?.unitPriceCents, 125)
-    assert.equal(sale.items[0]?.lineTotalCents, 250)
-    assert.deepEqual(historicalSale.items, sale.items)
+    assert.equal(sale.sale.subtotalCents, 250)
+    assert.equal(sale.sale.items[0]?.sku, 'COFFEE')
+    assert.equal(sale.sale.items[0]?.name, 'Large coffee')
+    assert.equal(sale.sale.items[0]?.unitPriceCents, 125)
+    assert.equal(sale.sale.items[0]?.lineTotalCents, 250)
+    assert.deepEqual(historicalSale.items, sale.sale.items)
   })
 })
 
@@ -253,8 +256,8 @@ test('lists newest sales first and reports historical item counts', () => {
     assert.deepEqual(
       service.listRecent().map(({ id, itemCount }) => [id, itemCount]),
       [
-        [second.id, 1],
-        [first.id, 1]
+        [second.sale.id, 1],
+        [first.sale.id, 1]
       ]
     )
   })
@@ -267,13 +270,14 @@ test('completed sale and item snapshots persist after reopening the database', (
   database.pragma('foreign_keys = ON')
   database.exec(schema)
   const products = createProductRepository(database)
+  const settings = createSettingsRepository(database)
   const productId = createProduct(products, {
     sku: 'PERSIST',
     name: 'Persistent item',
     priceCents: 499,
     stockQuantity: 3
   })
-  const sale = createSalesService(createSalesRepository(database)).completeCheckout({
+  const sale = createSalesService(createSalesRepository(database), settings).completeCheckout({
     items: [{ productId, quantity: 1 }],
     paymentMethod: 'cash'
   })
@@ -281,8 +285,11 @@ test('completed sale and item snapshots persist after reopening the database', (
 
   try {
     database = new Database(path)
-    const reopened = createSalesService(createSalesRepository(database))
-    const persisted = reopened.getById(sale.id)
+    const reopened = createSalesService(
+      createSalesRepository(database),
+      createSettingsRepository(database)
+    )
+    const persisted = reopened.getById(sale.sale.id)
     assert.equal(persisted.totalCents, 499)
     assert.equal(persisted.items[0]?.name, 'Persistent item')
     assert.equal(persisted.items[0]?.unitPriceCents, 499)

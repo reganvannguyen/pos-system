@@ -35,6 +35,9 @@ function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
   const [savingSale, setSavingSale] = useState(false)
   const [checkoutError, setCheckoutError] = useState('')
   const [completedSale, setCompletedSale] = useState<SaleDetail | null>(null)
+  const [printingReceipt, setPrintingReceipt] = useState(false)
+  const [receiptSent, setReceiptSent] = useState(false)
+  const [receiptError, setReceiptError] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const lookupQueue = useRef<Promise<void>>(Promise.resolve())
   const itemCount = cart.reduce((count, line) => count + line.quantity, 0)
@@ -82,6 +85,8 @@ function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
     setLookupMessage('')
     setLookupIsError(false)
     setCompletedSale(null)
+    setReceiptSent(false)
+    setReceiptError('')
     inputRef.current?.focus()
 
     if (!sku) return
@@ -120,6 +125,8 @@ function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
     setLookupIsError(false)
     setCheckoutError('')
     setCompletedSale(null)
+    setReceiptSent(false)
+    setReceiptError('')
     inputRef.current?.focus()
   }
 
@@ -139,15 +146,41 @@ function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
         return
       }
 
-      setCompletedSale(result.data)
+      const sale = result.data.sale
+      setCompletedSale(sale)
       setCart((current) => clearCart(current))
       setPendingPayment(null)
       setLookupMessage('')
       setLookupIsError(false)
+      setReceiptSent(false)
+      setReceiptError('')
+      if (result.data.autoPrintReceipt) void sendReceipt(sale.id)
     } catch {
       setCheckoutError('The sale could not be saved. Your cart is still available; try again.')
     } finally {
       setSavingSale(false)
+    }
+  }
+
+  async function sendReceipt(saleId: number): Promise<void> {
+    if (printingReceipt) return
+    setPrintingReceipt(true)
+    setReceiptError('')
+    try {
+      const result = await window.pos.receipts.print(saleId)
+      if (!result.ok) {
+        setReceiptError(result.error.message)
+        setReceiptSent(false)
+      } else {
+        setReceiptSent(true)
+      }
+    } catch {
+      setReceiptError(
+        'Receipt could not be sent to the printer. The sale is saved and can be reprinted.'
+      )
+      setReceiptSent(false)
+    } finally {
+      setPrintingReceipt(false)
     }
   }
 
@@ -200,16 +233,39 @@ function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
             Sale #{completedSale.id} completed ·{' '}
             {currencyFormatter.format(completedSale.totalCents / 100)}
           </span>
-          <button
-            className="text-button"
-            type="button"
-            onClick={() => {
-              setCompletedSale(null)
-              inputRef.current?.focus()
-            }}
-          >
-            New sale
-          </button>
+          <span className="sale-success-actions">
+            <button
+              className="text-button"
+              type="button"
+              disabled={printingReceipt}
+              onClick={() => void sendReceipt(completedSale.id)}
+            >
+              {printingReceipt ? 'Sending…' : receiptSent ? 'Reprint receipt' : 'Print receipt'}
+            </button>
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => {
+                setCompletedSale(null)
+                setReceiptSent(false)
+                setReceiptError('')
+                inputRef.current?.focus()
+              }}
+            >
+              New sale
+            </button>
+          </span>
+          {receiptError && (
+            <span className="sale-receipt-error" role="alert">
+              {receiptError}
+            </span>
+          )}
+          {printingReceipt && (
+            <span className="sale-receipt-status">Sending receipt to printer…</span>
+          )}
+          {receiptSent && !printingReceipt && (
+            <span className="sale-receipt-status">Receipt sent to printer.</span>
+          )}
         </div>
       )}
 

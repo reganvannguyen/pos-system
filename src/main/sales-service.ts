@@ -2,6 +2,7 @@ import type {
   CheckoutItem,
   CheckoutQuote,
   PaymentMethod,
+  SaleCompletion,
   SaleDetail,
   SaleErrorCode,
   SaleResult,
@@ -14,6 +15,7 @@ import type {
   SalesRepository
 } from './database/repositories/sales'
 import { SalesRepositoryError } from './database/repositories/sales'
+import type { SettingsRepository } from './database/repositories/settings'
 
 export class SalesServiceError extends Error {
   constructor(
@@ -25,25 +27,25 @@ export class SalesServiceError extends Error {
   }
 }
 
-export function createSalesService(repository: SalesRepository) {
+export function createSalesService(repository: SalesRepository, settings: SettingsRepository) {
   return {
     quote(value: unknown): CheckoutQuote {
       return toQuote(repository.quote(parseItems(value)))
     },
 
-    completeCheckout(value: unknown): SaleDetail {
+    completeCheckout(value: unknown): SaleCompletion {
       if (!isRecord(value)) {
         throw new SalesServiceError('invalid-input', 'Enter a valid sale and payment method.')
       }
       if (value.paymentMethod !== 'cash' && value.paymentMethod !== 'card') {
         throw new SalesServiceError('invalid-input', 'Choose Cash or Card as the payment method.')
       }
-      return toSaleDetail(
-        repository.completeCheckout({
-          items: parseItems(value.items),
-          paymentMethod: value.paymentMethod as PaymentMethod
-        })
-      )
+      const autoPrintReceipt = settings.get().auto_print_receipt === 1
+      const sale = repository.completeCheckout({
+        items: parseItems(value.items),
+        paymentMethod: value.paymentMethod as PaymentMethod
+      })
+      return { sale: toSaleDetail(sale), autoPrintReceipt }
     },
 
     listRecent(): SaleSummary[] {
@@ -58,6 +60,8 @@ export function createSalesService(repository: SalesRepository) {
     }
   }
 }
+
+export type SalesService = ReturnType<typeof createSalesService>
 
 export function toSalesResult<T>(operation: () => T): SaleResult<T> {
   try {

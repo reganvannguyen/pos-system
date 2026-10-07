@@ -8,7 +8,11 @@ export const IPC_CHANNELS = {
   salesQuote: 'sales:quote',
   salesCompleteCheckout: 'sales:complete-checkout',
   salesListRecent: 'sales:list-recent',
-  salesGetById: 'sales:get-by-id'
+  salesGetById: 'sales:get-by-id',
+  printersList: 'printers:list',
+  settingsGetReceipt: 'settings:get-receipt',
+  settingsSaveReceipt: 'settings:save-receipt',
+  receiptsPrint: 'receipts:print'
 } as const
 
 export type ProductStatus = 'active' | 'inactive'
@@ -98,6 +102,11 @@ export interface SaleDetail extends SaleSummary {
   items: SaleItem[]
 }
 
+export interface SaleCompletion {
+  sale: SaleDetail
+  autoPrintReceipt: boolean
+}
+
 export type SaleErrorCode =
   'invalid-input' | 'unavailable-product' | 'insufficient-stock' | 'not-found' | 'internal'
 
@@ -107,6 +116,37 @@ export interface SaleApiError {
 }
 
 export type SaleResult<T> = { ok: true; data: T } | { ok: false; error: SaleApiError }
+
+export interface PrinterOption {
+  name: string
+  displayName: string
+  description: string
+}
+
+export interface ReceiptSettings {
+  printerName: string | null
+  autoPrintReceipt: boolean
+}
+
+export interface ReceiptPrintResult {
+  saleId: number
+  sentToPrinter: true
+}
+
+export type ReceiptErrorCode =
+  | 'invalid-input'
+  | 'printer-not-selected'
+  | 'printer-unavailable'
+  | 'sale-not-found'
+  | 'print-failed'
+  | 'internal'
+
+export interface ReceiptApiError {
+  code: ReceiptErrorCode
+  message: string
+}
+
+export type ReceiptResult<T> = { ok: true; data: T } | { ok: false; error: ReceiptApiError }
 
 export interface PosApi {
   app: {
@@ -121,8 +161,18 @@ export interface PosApi {
   }
   sales: {
     quote(items: CheckoutItem[]): Promise<SaleResult<CheckoutQuote>>
-    completeCheckout(request: CheckoutRequest): Promise<SaleResult<SaleDetail>>
+    completeCheckout(request: CheckoutRequest): Promise<SaleResult<SaleCompletion>>
     listRecent(): Promise<SaleResult<SaleSummary[]>>
     getById(id: number): Promise<SaleResult<SaleDetail>>
+  }
+  printers: {
+    list(): Promise<ReceiptResult<PrinterOption[]>>
+  }
+  settings: {
+    getReceipt(): Promise<ReceiptResult<ReceiptSettings>>
+    saveReceipt(settings: ReceiptSettings): Promise<ReceiptResult<ReceiptSettings>>
+  }
+  receipts: {
+    print(saleId: number): Promise<ReceiptResult<ReceiptPrintResult>>
   }
 }

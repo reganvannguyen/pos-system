@@ -156,6 +156,32 @@ interface SaleDetailViewProps {
 }
 
 function SaleDetailView({ sale, onBack }: SaleDetailViewProps): React.JSX.Element {
+  const [printing, setPrinting] = useState(false)
+  const [printed, setPrinted] = useState(false)
+  const [printError, setPrintError] = useState('')
+
+  async function printReceipt(): Promise<void> {
+    if (printing) return
+    setPrinting(true)
+    setPrintError('')
+    try {
+      const result = await window.pos.receipts.print(sale.id)
+      if (!result.ok) {
+        setPrintError(result.error.message)
+        setPrinted(false)
+      } else {
+        setPrinted(true)
+      }
+    } catch {
+      setPrintError(
+        'Receipt could not be sent to the printer. The sale is saved and can be reprinted.'
+      )
+      setPrinted(false)
+    } finally {
+      setPrinting(false)
+    }
+  }
+
   return (
     <div className="sale-detail-card">
       <div className="sale-detail-heading">
@@ -168,6 +194,24 @@ function SaleDetailView({ sale, onBack }: SaleDetailViewProps): React.JSX.Elemen
           <p className="sale-detail-date">{formatDate(sale.createdAt)}</p>
         </div>
         <span className="payment-badge">{sale.paymentMethod}</span>
+      </div>
+
+      <div className="sale-detail-actions">
+        <button
+          className="secondary-button"
+          type="button"
+          disabled={printing}
+          onClick={() => void printReceipt()}
+        >
+          {printing ? 'Sending…' : printed ? 'Reprint receipt' : 'Print receipt'}
+        </button>
+        {printing && <span role="status">Sending receipt to printer…</span>}
+        {printed && !printing && <span role="status">Receipt sent to printer.</span>}
+        {printError && (
+          <span className="sale-receipt-error" role="alert">
+            {printError}
+          </span>
+        )}
       </div>
 
       <div className="sale-item-table-scroll">

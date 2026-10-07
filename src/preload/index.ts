@@ -17,6 +17,16 @@ const posApi: PosApi = {
     completeCheckout: (request) => ipcRenderer.invoke(IPC_CHANNELS.salesCompleteCheckout, request),
     listRecent: () => ipcRenderer.invoke(IPC_CHANNELS.salesListRecent),
     getById: (id) => ipcRenderer.invoke(IPC_CHANNELS.salesGetById, id)
+  },
+  printers: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.printersList)
+  },
+  settings: {
+    getReceipt: () => ipcRenderer.invoke(IPC_CHANNELS.settingsGetReceipt),
+    saveReceipt: (settings) => ipcRenderer.invoke(IPC_CHANNELS.settingsSaveReceipt, settings)
+  },
+  receipts: {
+    print: (saleId) => ipcRenderer.invoke(IPC_CHANNELS.receiptsPrint, saleId)
   }
 }
 

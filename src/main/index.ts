@@ -5,15 +5,19 @@ import { openDatabase } from './database/connection'
 import { createRepositories } from './database/repositories'
 import type { PosDatabase } from './database/types'
 import { createProductService, toProductResult } from './product-service'
+import { printReceiptHtml } from './electron-printer'
+import { createReceiptService, toReceiptResult } from './receipt-service'
 import { createSalesService, toSalesResult } from './sales-service'
 
 let database: PosDatabase | undefined
 let repositories: ReturnType<typeof createRepositories> | undefined
 let productService: ReturnType<typeof createProductService> | undefined
 let salesService: ReturnType<typeof createSalesService> | undefined
+let receiptService: ReturnType<typeof createReceiptService> | undefined
+let mainWindow: BrowserWindow | undefined
 
 function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 900,
@@ -25,6 +29,10 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: true
     }
+  })
+
+  mainWindow.on('closed', () => {
+    mainWindow = undefined
   })
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -69,6 +77,21 @@ function registerSalesHandlers(): void {
   )
 }
 
+function registerReceiptHandlers(): void {
+  ipcMain.handle(IPC_CHANNELS.printersList, () =>
+    toReceiptResult(() => requireReceiptService().listPrinters())
+  )
+  ipcMain.handle(IPC_CHANNELS.settingsGetReceipt, () =>
+    toReceiptResult(() => requireReceiptService().getSettings())
+  )
+  ipcMain.handle(IPC_CHANNELS.settingsSaveReceipt, (_event, settings: unknown) =>
+    toReceiptResult(() => requireReceiptService().saveSettings(settings))
+  )
+  ipcMain.handle(IPC_CHANNELS.receiptsPrint, (_event, saleId: unknown) =>
+    toReceiptResult(() => requireReceiptService().print(saleId))
+  )
+}
+
 function requireProductService(): NonNullable<typeof productService> {
   if (!productService) throw new Error('The product service is not ready.')
   return productService
@@ -79,17 +102,29 @@ function requireSalesService(): NonNullable<typeof salesService> {
   return salesService
 }
 
+function requireReceiptService(): NonNullable<typeof receiptService> {
+  if (!receiptService) throw new Error('The receipt service is not ready.')
+  return receiptService
+}
+
 app.whenReady().then(() => {
   try {
     database = openDatabase(join(app.getPath('userData'), 'pos-system.sqlite'))
     repositories = createRepositories(database)
     repositories.settings.get()
     productService = createProductService(repositories.products)
-    salesService = createSalesService(repositories.sales)
+    salesService = createSalesService(repositories.sales, repositories.settings)
+    receiptService = createReceiptService({
+      sales: repositories.sales,
+      settings: repositories.settings,
+      listSystemPrinters: async () => (await mainWindow?.webContents.getPrintersAsync()) ?? [],
+      printHtml: printReceiptHtml
+    })
   } catch (error) {
     repositories = undefined
     productService = undefined
     salesService = undefined
+    receiptService = undefined
     database?.close()
     const message = error instanceof Error ? error.message : String(error)
     dialog.showErrorBox('Unable to open the local database', message)
@@ -102,6 +137,7 @@ app.whenReady().then(() => {
   ipcMain.handle(IPC_CHANNELS.appGetVersion, () => app.getVersion())
   registerProductHandlers()
   registerSalesHandlers()
+  registerReceiptHandlers()
   createWindow()
 
   app.on('activate', () => {
