@@ -97,7 +97,54 @@ A sale has one or more sale items.
 
 A sale item may retain a reference to a product, but historical display must use the snapshot fields stored on the sale item.
 
-## 4. Suggested Schema
+## 4. ER Diagram
+
+```mermaid
+erDiagram
+    PRODUCTS {
+        INTEGER id PK
+        TEXT sku
+        TEXT name
+        INTEGER price_cents
+        INTEGER stock_quantity
+        INTEGER is_active
+        TEXT created_at
+        TEXT updated_at
+    }
+
+    SALES {
+        INTEGER id PK
+        INTEGER subtotal_cents
+        INTEGER tax_cents
+        INTEGER total_cents
+        TEXT payment_method
+        TEXT created_at
+    }
+
+    SALE_ITEMS {
+        INTEGER id PK
+        INTEGER sale_id FK
+        INTEGER product_id FK
+        TEXT sku
+        TEXT product_name
+        INTEGER unit_price_cents
+        INTEGER quantity
+        INTEGER line_total_cents
+    }
+
+    SETTINGS {
+        INTEGER id PK
+        TEXT business_name
+        INTEGER tax_rate_basis_points
+        TEXT printer_name
+        INTEGER auto_print_receipt
+    }
+
+    SALES ||--o{ SALE_ITEMS : contains
+    PRODUCTS ||--o{ SALE_ITEMS : referenced_by
+```
+
+## 5. Suggested Schema
 
 ```sql
 CREATE TABLE products (
@@ -143,7 +190,7 @@ CREATE TABLE settings (
 );
 ```
 
-## 5. Indexes
+## 6. Indexes
 
 The most important lookup is SKU entry during checkout.
 
@@ -158,7 +205,7 @@ CREATE INDEX idx_sale_items_sale_id
 ON sale_items(sale_id);
 ```
 
-## 6. Sale Write Transaction
+## 7. Sale Write Transaction
 
 Completing a sale must be atomic.
 
@@ -172,7 +219,7 @@ COMMIT
 
 If any step fails, roll back the entire transaction.
 
-## 7. Database Migrations
+## 8. Database Migrations
 
 Use numbered migrations from the beginning, even for a small local app.
 
