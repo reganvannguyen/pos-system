@@ -95,7 +95,7 @@ Core functionality must work without internet access, including:
 - A completed sale must be written atomically.
 - Sale totals and sale items must remain consistent.
 - Historical prices must be retained.
-- SKU values must be unique for active products.
+- SKU values must be unique across all products. Deactivating a product does not free its SKU; reserved SKUs cannot be reused.
 
 ### Usability
 

@@ -1,0 +1,19 @@
+appId: com.regannguyen.possystem
+productName: POS System
+directories:
+  output: release
+files:
+  - out/**/*
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  artifactName: '${productName}-${version}-${arch}-setup.${ext}'
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false

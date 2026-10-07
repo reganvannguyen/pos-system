@@ -15,7 +15,7 @@ Stores the current product catalog.
 | Column | Type | Constraints | Purpose |
 |---|---|---|---|
 | id | INTEGER | PRIMARY KEY | Internal product identifier |
-| sku | TEXT | UNIQUE, NOT NULL | Code typed by the cashier |
+| sku | TEXT | UNIQUE, NOT NULL | Code typed by the cashier; reserved permanently |
 | name | TEXT | NOT NULL | Current product name |
 | price_cents | INTEGER | NOT NULL | Current selling price in cents |
 | stock_quantity | INTEGER | nullable | Current stock if inventory tracking is enabled |
@@ -60,6 +60,8 @@ Stores the line items belonging to a completed sale.
 | line_total_cents | INTEGER | NOT NULL | Unit price x quantity |
 
 The SKU, name, and price are deliberately copied into `sale_items`. Historical receipts must remain correct even if a product is renamed, repriced, or removed later.
+
+An SKU remains reserved after its product is deactivated. The unique constraint applies across active and inactive products, so deactivated SKUs cannot be reassigned.
 
 ### settings
 

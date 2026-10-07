@@ -1,0 +1,42 @@
+{
+  "name": "pos-system",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A lightweight Windows point-of-sale application",
+  "main": "./out/main/index.js",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "postinstall": "node node_modules/electron/install.js",
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "build": "npm run typecheck && electron-vite build",
+    "build:win": "npm run build && electron-builder --win nsis --x64",
+    "lint": "eslint --cache .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "eslint": "^10.12.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "prettier": "^3.7.4",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.1",
+    "vite": "^7.2.6"
+  }
+}
