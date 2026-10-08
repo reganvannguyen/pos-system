@@ -1,9 +1,29 @@
-import { useCallback, useEffect, useState } from 'react'
-import type { BusinessSettingsField, PrinterOption } from '../../shared/pos-api'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type {
+  BusinessSettingsInput,
+  BusinessSettingsField,
+  PrinterOption,
+  TaxRate,
+  TaxRateInput,
+  TaxSettingsField
+} from '../../shared/pos-api'
+import { renderReceiptPreviewHtml } from '../../shared/receipt-html'
+
+const emptyBusinessSettings: BusinessSettingsInput = {
+  businessName: '',
+  businessAddress: '',
+  businessCity: '',
+  businessProvince: '',
+  businessPostalCode: '',
+  businessPhone: '',
+  businessEmail: '',
+  businessGstNumber: '',
+  businessWebsite: ''
+}
 
 function SettingsScreen(): React.JSX.Element {
-  const [businessName, setBusinessName] = useState('')
-  const [taxRatePercent, setTaxRatePercent] = useState('')
+  const [businessDetails, setBusinessDetails] =
+    useState<BusinessSettingsInput>(emptyBusinessSettings)
   const [businessLoading, setBusinessLoading] = useState(true)
   const [businessLoaded, setBusinessLoaded] = useState(false)
   const [businessSaving, setBusinessSaving] = useState(false)
@@ -13,9 +33,18 @@ function SettingsScreen(): React.JSX.Element {
   >({})
   const [businessNotice, setBusinessNotice] = useState('')
 
+  const [taxes, setTaxes] = useState<TaxRateInput[]>([])
+  const [taxLoading, setTaxLoading] = useState(true)
+  const [taxLoaded, setTaxLoaded] = useState(false)
+  const [taxSaving, setTaxSaving] = useState(false)
+  const [taxError, setTaxError] = useState('')
+  const [taxFieldErrors, setTaxFieldErrors] = useState<
+    Record<number, Partial<Record<TaxSettingsField, string>>>
+  >({})
+  const [taxNotice, setTaxNotice] = useState('')
+
   const [printers, setPrinters] = useState<PrinterOption[]>([])
   const [printerName, setPrinterName] = useState<string | null>(null)
-  const [autoPrintReceipt, setAutoPrintReceipt] = useState(false)
   const [receiptLoading, setReceiptLoading] = useState(true)
   const [printerLoading, setPrinterLoading] = useState(false)
   const [receiptLoaded, setReceiptLoaded] = useState(false)
@@ -33,14 +62,31 @@ function SettingsScreen(): React.JSX.Element {
         setBusinessError(result.error.message)
         return
       }
-
-      setBusinessName(result.data.businessName)
-      setTaxRatePercent(formatTaxRate(result.data.taxRateBasisPoints))
+      setBusinessDetails(result.data)
       setBusinessLoaded(true)
     } catch {
-      setBusinessError('Business settings could not be loaded. Try again.')
+      setBusinessError('Receipt details could not be loaded. Try again.')
     } finally {
       setBusinessLoading(false)
+    }
+  }, [])
+
+  const loadTaxSettings = useCallback(async (): Promise<void> => {
+    setTaxLoading(true)
+    setTaxError('')
+    setTaxNotice('')
+    try {
+      const result = await window.pos.settings.getTaxes()
+      if (!result.ok) {
+        setTaxError(result.error.message)
+        return
+      }
+      setTaxes(result.data.map(toTaxInput))
+      setTaxLoaded(true)
+    } catch {
+      setTaxError('Tax settings could not be loaded. Try again.')
+    } finally {
+      setTaxLoading(false)
     }
   }, [])
 
@@ -58,7 +104,6 @@ function SettingsScreen(): React.JSX.Element {
 
       if (settingsResult.ok) {
         setPrinterName(settingsResult.data.printerName)
-        setAutoPrintReceipt(settingsResult.data.autoPrintReceipt)
         setReceiptLoaded(true)
       } else {
         setReceiptError(settingsResult.error.message)
@@ -90,8 +135,9 @@ function SettingsScreen(): React.JSX.Element {
 
   useEffect(() => {
     void Promise.resolve().then(loadBusinessSettings)
+    void Promise.resolve().then(loadTaxSettings)
     void Promise.resolve().then(loadReceiptSettings)
-  }, [loadBusinessSettings, loadReceiptSettings])
+  }, [loadBusinessSettings, loadReceiptSettings, loadTaxSettings])
 
   async function saveBusinessSettings(): Promise<void> {
     setBusinessSaving(true)
@@ -99,7 +145,7 @@ function SettingsScreen(): React.JSX.Element {
     setBusinessFieldErrors({})
     setBusinessNotice('')
     try {
-      const result = await window.pos.settings.saveBusiness({ businessName, taxRatePercent })
+      const result = await window.pos.settings.saveBusiness(businessDetails)
       if (!result.ok) {
         if (result.error.field) {
           setBusinessFieldErrors({ [result.error.field]: result.error.message })
@@ -108,16 +154,57 @@ function SettingsScreen(): React.JSX.Element {
         }
         return
       }
-
-      setBusinessName(result.data.businessName)
-      setTaxRatePercent(formatTaxRate(result.data.taxRateBasisPoints))
+      setBusinessDetails(result.data)
       setBusinessLoaded(true)
-      setBusinessNotice('Business settings saved.')
+      setBusinessNotice('Receipt details saved.')
     } catch {
-      setBusinessError('Business settings could not be saved. Try again.')
+      setBusinessError('Receipt details could not be saved. Try again.')
     } finally {
       setBusinessSaving(false)
     }
+  }
+
+  async function saveTaxSettings(): Promise<void> {
+    setTaxSaving(true)
+    setTaxError('')
+    setTaxFieldErrors({})
+    setTaxNotice('')
+    try {
+      const result = await window.pos.settings.saveTaxes({ taxes })
+      if (!result.ok) {
+        if (result.error.index !== undefined && result.error.field) {
+          setTaxFieldErrors({
+            [result.error.index]: { [result.error.field]: result.error.message }
+          })
+        } else {
+          setTaxError(result.error.message)
+        }
+        return
+      }
+      setTaxes(result.data.map(toTaxInput))
+      setTaxLoaded(true)
+      setTaxNotice('Tax settings saved.')
+    } catch {
+      setTaxError('Tax settings could not be saved. Try again.')
+    } finally {
+      setTaxSaving(false)
+    }
+  }
+
+  function clearTaxRowError(index: number, field: TaxSettingsField): void {
+    setTaxFieldErrors((current) => ({
+      ...current,
+      [index]: { ...current[index], [field]: undefined }
+    }))
+    setTaxError('')
+    setTaxNotice('')
+  }
+
+  function updateBusinessField(field: BusinessSettingsField, value: string): void {
+    setBusinessDetails((current) => ({ ...current, [field]: value }))
+    setBusinessFieldErrors((current) => ({ ...current, [field]: undefined }))
+    setBusinessError('')
+    setBusinessNotice('')
   }
 
   async function saveReceiptSettings(): Promise<void> {
@@ -125,13 +212,12 @@ function SettingsScreen(): React.JSX.Element {
     setReceiptError('')
     setReceiptNotice('')
     try {
-      const result = await window.pos.settings.saveReceipt({ printerName, autoPrintReceipt })
+      const result = await window.pos.settings.saveReceipt({ printerName })
       if (!result.ok) {
         setReceiptError(result.error.message)
         return
       }
       setPrinterName(result.data.printerName)
-      setAutoPrintReceipt(result.data.autoPrintReceipt)
       setReceiptNotice('Receipt settings saved.')
     } catch {
       setReceiptError('Receipt settings could not be saved. Try again.')
@@ -142,31 +228,202 @@ function SettingsScreen(): React.JSX.Element {
 
   const unavailableSavedPrinter =
     printerName !== null && !printers.some((printer) => printer.name === printerName)
+  const receiptPreviewHtml = useMemo(
+    () => renderReceiptPreviewHtml(businessDetails),
+    [businessDetails]
+  )
 
   return (
     <section className="settings-page" aria-label="Settings">
-      <section className="settings-card" aria-labelledby="business-settings-title">
+      <section
+        className="settings-card receipt-details-card"
+        aria-labelledby="receipt-details-title"
+      >
         <div className="settings-card-heading">
           <div>
-            <p className="eyebrow">Store setup</p>
-            <h2 id="business-settings-title">Business</h2>
+            <p className="eyebrow">Customer receipt</p>
+            <h2 id="receipt-details-title">Receipt details</h2>
             <p className="settings-copy">
-              These details appear on receipts and are used to calculate checkout tax.
+              Update the store information printed on receipts. The preview reflects unsaved edits.
             </p>
           </div>
         </div>
 
-        {businessLoading ? (
-          <p className="settings-state" role="status">
-            Loading business settings…
-          </p>
-        ) : !businessLoaded ? (
-          <div className="settings-state settings-load-error" role="alert">
-            <p>{businessError || 'Business settings could not be loaded.'}</p>
+        <div className="receipt-details-layout">
+          <div>
+            {businessLoading ? (
+              <p className="settings-state" role="status">
+                Loading receipt details…
+              </p>
+            ) : !businessLoaded ? (
+              <div className="settings-state settings-load-error" role="alert">
+                <p>{businessError || 'Receipt details could not be loaded.'}</p>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => void loadBusinessSettings()}
+                >
+                  Retry
+                </button>
+              </div>
+            ) : (
+              <form
+                className="settings-form receipt-details-form"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void saveBusinessSettings()
+                }}
+              >
+                <BusinessTextField
+                  id="business-name"
+                  label="Company name"
+                  autoComplete="organization"
+                  value={businessDetails.businessName}
+                  error={businessFieldErrors.businessName}
+                  disabled={businessSaving}
+                  onChange={(value) => updateBusinessField('businessName', value)}
+                />
+                <div className="receipt-location-group">
+                  <p className="receipt-fields-heading">Store location</p>
+                  <BusinessTextField
+                    id="business-address"
+                    label="Address"
+                    autoComplete="street-address"
+                    value={businessDetails.businessAddress}
+                    disabled={businessSaving}
+                    onChange={(value) => updateBusinessField('businessAddress', value)}
+                  />
+                  <div className="receipt-locality-grid">
+                    <BusinessTextField
+                      id="business-city"
+                      label="City"
+                      autoComplete="address-level2"
+                      value={businessDetails.businessCity}
+                      disabled={businessSaving}
+                      onChange={(value) => updateBusinessField('businessCity', value)}
+                    />
+                    <BusinessTextField
+                      id="business-province"
+                      label="Province"
+                      autoComplete="address-level1"
+                      value={businessDetails.businessProvince}
+                      disabled={businessSaving}
+                      onChange={(value) => updateBusinessField('businessProvince', value)}
+                    />
+                    <BusinessTextField
+                      id="business-postal-code"
+                      label="Postal code"
+                      autoComplete="postal-code"
+                      value={businessDetails.businessPostalCode}
+                      disabled={businessSaving}
+                      onChange={(value) => updateBusinessField('businessPostalCode', value)}
+                    />
+                  </div>
+                </div>
+                <BusinessTextField
+                  id="business-phone"
+                  label="Phone number (optional)"
+                  type="tel"
+                  autoComplete="tel"
+                  value={businessDetails.businessPhone}
+                  disabled={businessSaving}
+                  onChange={(value) => updateBusinessField('businessPhone', value)}
+                />
+                <BusinessTextField
+                  id="business-email"
+                  label="Contact email (optional)"
+                  type="email"
+                  autoComplete="email"
+                  value={businessDetails.businessEmail}
+                  error={businessFieldErrors.businessEmail}
+                  helperText="The email app selects the sending account."
+                  disabled={businessSaving}
+                  onChange={(value) => updateBusinessField('businessEmail', value)}
+                />
+                <BusinessTextField
+                  id="business-gst-number"
+                  label="GST/HST number (optional)"
+                  value={businessDetails.businessGstNumber}
+                  disabled={businessSaving}
+                  onChange={(value) => updateBusinessField('businessGstNumber', value)}
+                />
+                <BusinessTextField
+                  id="business-website"
+                  label="Website (optional)"
+                  type="text"
+                  autoComplete="url"
+                  value={businessDetails.businessWebsite}
+                  disabled={businessSaving}
+                  onChange={(value) => updateBusinessField('businessWebsite', value)}
+                />
+                {businessError && (
+                  <p className="product-banner-error" role="alert">
+                    {businessError}
+                  </p>
+                )}
+                {businessNotice && (
+                  <p className="settings-notice" role="status">
+                    {businessNotice}
+                  </p>
+                )}
+                <div className="settings-actions">
+                  <button className="primary-button" type="submit" disabled={businessSaving}>
+                    {businessSaving ? 'Saving…' : 'Save receipt details'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+          <aside className="receipt-preview-panel" aria-labelledby="receipt-preview-title">
+            <h3 id="receipt-preview-title">Live receipt preview</h3>
+            <iframe
+              className="receipt-preview-frame"
+              title="Sample 58 millimetre receipt preview"
+              sandbox="allow-same-origin"
+              srcDoc={receiptPreviewHtml}
+            />
+            <small className="settings-help">Sample invoice and items shown for layout only.</small>
+          </aside>
+        </div>
+      </section>
+
+      <section className="settings-card" aria-labelledby="tax-settings-title">
+        <div className="settings-card-heading">
+          <div>
+            <p className="eyebrow">Checkout</p>
+            <h2 id="tax-settings-title">Tax</h2>
+            <p className="settings-copy">
+              Add each tax charged in your store. Every rate is calculated on the pre-tax subtotal.
+            </p>
+          </div>
+          {taxLoaded && (
             <button
               className="secondary-button"
               type="button"
-              onClick={() => void loadBusinessSettings()}
+              disabled={taxSaving}
+              onClick={() => {
+                setTaxes((current) => [...current, { name: '', ratePercent: '' }])
+                setTaxFieldErrors({})
+                setTaxError('')
+                setTaxNotice('')
+              }}
+            >
+              Add tax
+            </button>
+          )}
+        </div>
+
+        {taxLoading ? (
+          <p className="settings-state" role="status">
+            Loading tax settings…
+          </p>
+        ) : !taxLoaded ? (
+          <div className="settings-state settings-load-error" role="alert">
+            <p>{taxError || 'Tax settings could not be loaded.'}</p>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void loadTaxSettings()}
             >
               Retry
             </button>
@@ -176,87 +433,120 @@ function SettingsScreen(): React.JSX.Element {
             className="settings-form"
             onSubmit={(event) => {
               event.preventDefault()
-              void saveBusinessSettings()
+              void saveTaxSettings()
             }}
           >
-            <label className="settings-field" htmlFor="business-name">
-              <span>Business name</span>
-              <input
-                id="business-name"
-                type="text"
-                autoComplete="organization"
-                value={businessName}
-                disabled={businessSaving}
-                aria-invalid={Boolean(businessFieldErrors.businessName)}
-                aria-describedby={
-                  businessFieldErrors.businessName ? 'business-name-error' : undefined
-                }
-                onChange={(event) => {
-                  setBusinessName(event.target.value)
-                  setBusinessFieldErrors((current) => ({ ...current, businessName: undefined }))
-                  setBusinessError('')
-                  setBusinessNotice('')
-                }}
-              />
-              {businessFieldErrors.businessName && (
-                <small id="business-name-error" className="settings-help is-error" role="alert">
-                  {businessFieldErrors.businessName}
-                </small>
-              )}
-            </label>
-
-            <label className="settings-field" htmlFor="business-tax-rate">
-              <span>Tax rate</span>
-              <div className="settings-percent-input">
-                <input
-                  id="business-tax-rate"
-                  type="text"
-                  inputMode="decimal"
-                  autoComplete="off"
-                  value={taxRatePercent}
-                  disabled={businessSaving}
-                  aria-invalid={Boolean(businessFieldErrors.taxRatePercent)}
-                  aria-describedby={
-                    businessFieldErrors.taxRatePercent ? 'business-tax-error' : 'business-tax-help'
-                  }
-                  onChange={(event) => {
-                    setTaxRatePercent(event.target.value)
-                    setBusinessFieldErrors((current) => ({ ...current, taxRatePercent: undefined }))
-                    setBusinessError('')
-                    setBusinessNotice('')
-                  }}
-                />
-                <span aria-hidden="true">%</span>
+            {taxes.length === 0 ? (
+              <p className="settings-state">
+                No taxes configured. Add a tax to include it at checkout.
+              </p>
+            ) : (
+              <div className="tax-rate-list">
+                {taxes.map((tax, index) => (
+                  <div className="tax-rate-row" key={tax.id ?? `new-${index}`}>
+                    <label className="settings-field" htmlFor={`tax-name-${index}`}>
+                      <span>Tax name</span>
+                      <input
+                        id={`tax-name-${index}`}
+                        type="text"
+                        maxLength={60}
+                        value={tax.name}
+                        disabled={taxSaving}
+                        aria-invalid={Boolean(taxFieldErrors[index]?.name)}
+                        aria-describedby={
+                          taxFieldErrors[index]?.name ? `tax-name-error-${index}` : undefined
+                        }
+                        onChange={(event) => {
+                          setTaxes((current) =>
+                            current.map((entry, row) =>
+                              row === index ? { ...entry, name: event.target.value } : entry
+                            )
+                          )
+                          clearTaxRowError(index, 'name')
+                        }}
+                      />
+                      {taxFieldErrors[index]?.name && (
+                        <small
+                          id={`tax-name-error-${index}`}
+                          className="settings-help is-error"
+                          role="alert"
+                        >
+                          {taxFieldErrors[index]?.name}
+                        </small>
+                      )}
+                    </label>
+                    <label className="settings-field" htmlFor={`tax-rate-${index}`}>
+                      <span>Rate</span>
+                      <div className="settings-percent-input">
+                        <input
+                          id={`tax-rate-${index}`}
+                          type="text"
+                          inputMode="decimal"
+                          autoComplete="off"
+                          value={tax.ratePercent}
+                          disabled={taxSaving}
+                          aria-invalid={Boolean(taxFieldErrors[index]?.ratePercent)}
+                          aria-describedby={
+                            taxFieldErrors[index]?.ratePercent
+                              ? `tax-rate-error-${index}`
+                              : undefined
+                          }
+                          onChange={(event) => {
+                            setTaxes((current) =>
+                              current.map((entry, row) =>
+                                row === index
+                                  ? { ...entry, ratePercent: event.target.value }
+                                  : entry
+                              )
+                            )
+                            clearTaxRowError(index, 'ratePercent')
+                          }}
+                        />
+                        <span aria-hidden="true">%</span>
+                      </div>
+                      {taxFieldErrors[index]?.ratePercent && (
+                        <small
+                          id={`tax-rate-error-${index}`}
+                          className="settings-help is-error"
+                          role="alert"
+                        >
+                          {taxFieldErrors[index]?.ratePercent}
+                        </small>
+                      )}
+                    </label>
+                    <button
+                      className="text-button danger-text tax-remove-button"
+                      type="button"
+                      disabled={taxSaving}
+                      aria-label={`Remove ${tax.name || `tax ${index + 1}`}`}
+                      onClick={() => {
+                        setTaxes((current) => current.filter((_, row) => row !== index))
+                        setTaxFieldErrors({})
+                        setTaxNotice('')
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
               </div>
-              {businessFieldErrors.taxRatePercent ? (
-                <small id="business-tax-error" className="settings-help is-error" role="alert">
-                  {businessFieldErrors.taxRatePercent}
-                </small>
-              ) : (
-                <small id="business-tax-help" className="settings-help">
-                  Enter 0 to 100, with up to two decimal places.
-                </small>
-              )}
-            </label>
-
-            {businessError && (
+            )}
+            <small className="settings-help">
+              Enter rates from 0% to 100%, with up to two decimal places.
+            </small>
+            {taxError && (
               <p className="product-banner-error" role="alert">
-                {businessError}
+                {taxError}
               </p>
             )}
-            {businessNotice && (
+            {taxNotice && (
               <p className="settings-notice" role="status">
-                {businessNotice}
+                {taxNotice}
               </p>
             )}
             <div className="settings-actions">
-              <button
-                className="primary-button"
-                type="submit"
-                disabled={businessSaving}
-                onClick={() => void saveBusinessSettings()}
-              >
-                {businessSaving ? 'Saving…' : 'Save business settings'}
+              <button className="primary-button" type="submit" disabled={taxSaving}>
+                {taxSaving ? 'Saving…' : 'Save tax settings'}
               </button>
             </div>
           </form>
@@ -267,10 +557,10 @@ function SettingsScreen(): React.JSX.Element {
         <div className="settings-card-heading">
           <div>
             <p className="eyebrow">Register hardware</p>
-            <h2 id="receipt-settings-title">Receipt</h2>
+            <h2 id="receipt-settings-title">Receipt printer</h2>
             <p className="settings-copy">
-              Choose where receipts print. The printer driver controls the paper size; use an 80 mm
-              receipt setting for this register.
+              Choose the printer used when staff select Print after checkout. The driver controls
+              paper size; use a 58 mm receipt setting for this register.
             </p>
           </div>
           <button
@@ -337,19 +627,6 @@ function SettingsScreen(): React.JSX.Element {
               )}
             </label>
 
-            <label className="settings-checkbox">
-              <input
-                type="checkbox"
-                checked={autoPrintReceipt}
-                disabled={receiptSaving || printerLoading}
-                onChange={(event) => setAutoPrintReceipt(event.target.checked)}
-              />
-              <span>
-                <strong>Print automatically after checkout</strong>
-                <small>Printing starts after the sale has been saved.</small>
-              </span>
-            </label>
-
             {receiptError && (
               <p className="product-banner-error" role="alert">
                 {receiptError}
@@ -365,7 +642,6 @@ function SettingsScreen(): React.JSX.Element {
                 className="primary-button"
                 type="submit"
                 disabled={receiptSaving || printerLoading}
-                onClick={() => void saveReceiptSettings()}
               >
                 {receiptSaving ? 'Saving…' : 'Save receipt settings'}
               </button>
@@ -377,8 +653,56 @@ function SettingsScreen(): React.JSX.Element {
   )
 }
 
-function formatTaxRate(basisPoints: number): string {
-  return (basisPoints / 100).toFixed(2)
+function toTaxInput(tax: TaxRate): TaxRateInput {
+  return { id: tax.id, name: tax.name, ratePercent: (tax.rateBasisPoints / 100).toFixed(2) }
+}
+
+interface BusinessTextFieldProps {
+  id: string
+  label: string
+  value: string
+  onChange: (value: string) => void
+  type?: 'text' | 'email' | 'tel'
+  autoComplete?: string
+  disabled?: boolean
+  error?: string
+  helperText?: string
+}
+
+function BusinessTextField({
+  id,
+  label,
+  value,
+  onChange,
+  type = 'text',
+  autoComplete,
+  disabled = false,
+  error,
+  helperText
+}: BusinessTextFieldProps): React.JSX.Element {
+  const errorId = `${id}-error`
+  return (
+    <label className="settings-field" htmlFor={id}>
+      <span>{label}</span>
+      <input
+        id={id}
+        type={type}
+        required={id === 'business-name'}
+        autoComplete={autoComplete}
+        value={value}
+        disabled={disabled}
+        aria-invalid={Boolean(error)}
+        aria-describedby={error ? errorId : undefined}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {helperText && <small className="settings-help">{helperText}</small>}
+      {error && (
+        <small id={errorId} className="settings-help is-error" role="alert">
+          {error}
+        </small>
+      )}
+    </label>
+  )
 }
 
 export default SettingsScreen

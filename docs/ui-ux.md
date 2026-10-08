@@ -35,10 +35,16 @@ Product added to cart
 Repeat as needed
    |
    v
-Choose payment method
+Optionally select a price and record the reason
    |
    v
-Complete sale
+Enter Cash, Debit, or Credit tender
+   |
+   +----> Add another payment while a balance remains
+   +----> Show cash change if cash exceeds the remaining amount
+   |
+   v
+Confirm Complete Sale when covered
 ```
 
 The application should avoid unnecessary screens, popups, and navigation during checkout.
@@ -149,7 +155,7 @@ Suggested layout:
 |  |                                              TOTAL     $9.24  |  |
 |  +---------------------------------------------------------------+  |
 |                                                                     |
-|                                [ CASH ]       [ CARD ]              |
+|                   [ CASH ] [ DEBIT ] [ CREDIT ]                  |
 |                                                                     |
 +---------------------------------------------------------------------+
 ```
@@ -239,19 +245,25 @@ Suggested controls:
 TOTAL
 $9.24
 
-[ CASH ]     [ CARD ]
+[ CASH ] [ DEBIT ] [ CREDIT ]
+Paid $4.00  |  Remaining $5.24
 ```
 
-Selecting Cash or Card should open a small confirmation dialog.
+Clicking an item price opens a small form for a new CAD price and required reason. Confirming it changes only that cart line for the current sale; the reason is retained in Sales History.
+
+Selecting a tender type opens an amount entry. Staff can add multiple tender entries, see the remaining balance, and remove a staged entry to correct it. Cash may exceed the remaining balance and displays change due. Card entries cannot exceed the remaining balance. The cashier explicitly completes the sale after the balance is covered. Incomplete payment sessions remain in memory across navigation, lock cart edits, and can be resumed or explicitly discarded.
 
 Example:
 
 ```text
-Complete Cash Sale?
+Complete this sale?
 
 Total: $9.24
+Cash tendered: $10.00
+Applied: $9.24
+Change due: $0.76
 
-[ Cancel ]     [ Complete Sale ]
+[ Keep taking payment ]     [ Complete Sale ]
 ```
 
 This confirmation helps prevent accidental sales during the initial version.
@@ -260,20 +272,20 @@ A future release may make confirmation optional if it becomes unnecessary during
 
 ### Successful Sale
 
-After a successful sale:
+After a successful sale, clear the cart and staged payments, then open the receipt dialog:
 
 ```text
 ✓ Sale completed
 
-[ Print Receipt ]    [ New Sale ]
+[ Print receipt ]
+[ Email PDF ]
+[ Text summary ]
+[ Done ]
 ```
 
-If automatic receipt printing is enabled:
-
-1. The sale is saved.
-2. The receipt is sent to the configured printer.
-3. The cart is cleared.
-4. The SKU field receives focus for the next customer.
+Email asks for the customer's address and prepares a PDF draft. Text asks for a phone number and
+prepares a short sale summary. Staff finish sending in the external app; recipient details are not
+stored. The receipt choices are also available from Sales History.
 
 ## 6. Products Screen
 
@@ -348,17 +360,20 @@ Suggested layout:
 ```text
 Sales
 
-Search / Filter
+Period: [Day v] [Date]                                  [Export CSV]
+
+Sales       Subtotal       Tax       Total       Cash       Card
+  12         $84.00       $6.72    $90.72      $55.00     $35.72
 
 ----------------------------------------------------------------
-Sale #     Date                   Payment       Items       Total
+Transaction #          Date                   Payment       Items       Total
 ----------------------------------------------------------------
-#105       Oct 7, 1:42 PM         Cash             3       $18.24
-#104       Oct 7, 1:31 PM         Card             5       $27.93
-#103       Oct 7, 1:22 PM         Cash             1        $4.99
+Invoice #20261007-0003 Oct 7, 1:42 PM         Cash             3       $18.24
+Invoice #20261007-0002 Oct 7, 1:31 PM         Card             5       $27.93
+Invoice #20261007-0001 Oct 7, 1:22 PM         Cash             1        $4.99
 ```
 
-Newest sales should appear first.
+Period filters include a chosen day, week, month, year, or custom inclusive date range. Weeks run Monday through Sunday in the computer's local time zone. The screen shows every matching sale or return, newest first, and summarizes gross sales, negative returns, net amounts, and Cash/Card received, refunded, and net totals. Export CSV saves one row per transaction, with signed amounts, tender breakdown, and return reason where applicable.
 
 ### Sale Detail
 
@@ -367,7 +382,7 @@ Selecting a sale should show its full contents.
 Example:
 
 ```text
-Sale #105
+Invoice #20261007-0001
 
 October 7, 2026 - 1:42 PM
 
@@ -379,12 +394,18 @@ Subtotal                         $11.75
 Tax                               $1.41
 TOTAL                            $13.16
 
-Payment: Cash
+Cash tendered: $15.00
+Applied: $13.16
+Change: $1.84
 
-[ Reprint Receipt ]
+[ Receipt options ]
 ```
 
 A sale detail screen should use the historical values stored in `sale_items`, not the current product name or price.
+
+### Return Mode
+
+The register has a visible Sale/Return mode selector. Switching modes with a populated cart or staged tender asks for confirmation before clearing that transaction state. In Return mode, staff enter the required reason, scan active or inactive SKUs, and adjust positive quantities. Unit prices, tax lines, and totals display as negative values using current catalog prices and tax rates. Each line has an unchecked Restock option. Cash, Debit, and Credit payouts can be split, but they must cover the return exactly; no change is calculated. Card refunds are recorded here and processed separately on the terminal. Completed returns appear as Return # transactions and open the same receipt choices; the internal reason never prints.
 
 ## 8. Settings Screen
 
@@ -400,8 +421,15 @@ BUSINESS
 Business Name
 [ My Store                    ]
 
-Tax Rate
-[ 12.00 ] %
+Business Email (optional)
+[ contact@store.example       ]
+
+
+TAX
+
+GST                       5.00 % [ Remove ]
+PST                       7.00 % [ Remove ]
+[ Add Tax ]
 
 
 RECEIPT
@@ -409,10 +437,10 @@ RECEIPT
 Printer
 [ EPSON Receipt Printer       v ]
 
-[x] Print receipt automatically
 
-
-                               [ Save Settings ]
+                  [ Save Business Settings ]
+                  [ Save Tax Settings ]
+                  [ Save Receipt Settings ]
 ```
 
 Settings should be grouped into clear sections instead of displayed as one long form.
@@ -420,6 +448,7 @@ Settings should be grouped into clear sections instead of displayed as one long 
 Initial sections:
 
 - Business.
+- Tax.
 - Receipt.
 
 Additional groups can be added later only when needed.
@@ -489,7 +518,9 @@ Examples:
 - Product saved.
 - Sale completed.
 - Settings saved.
-- Receipt sent to printer.
+- Receipt printed.
+- Email draft opened; review and send it in the mail app.
+- Messaging compose opened; review and send it there.
 
 ### Errors
 
@@ -580,7 +611,6 @@ Possible improvements after the MVP:
 - 58 mm / 80 mm receipt layout selection.
 - Product categories.
 - Quick product buttons for common items.
-- Cash amount tendered and change calculation.
 - Daily sales summary.
 - Improved filtering and search.
 - Employee login/permissions if multi-user support is introduced.

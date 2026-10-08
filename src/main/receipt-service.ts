@@ -1,14 +1,26 @@
 import type {
   PrinterOption,
   ReceiptApiError,
+  ReceiptEmailDraftResult,
   ReceiptErrorCode,
+  ReceiptPdfResult,
+  ReceiptBusinessDetails,
   ReceiptPrintResult,
   ReceiptResult,
-  ReceiptSettings
+  ReceiptSettings,
+  ReceiptTextDraftResult
 } from '../shared/pos-api'
 import type { SalesRepository } from './database/repositories/sales'
 import type { SettingsRepository } from './database/repositories/settings'
 import type { SaleDetailRecord } from './database/repositories/sales'
+import type { SettingsRecord } from './database/types'
+import {
+  formatReceiptDateTime,
+  renderReceiptHtml as renderReceiptTemplate,
+  type ReceiptTemplateSale
+} from '../shared/receipt-html'
+
+export { renderReceiptHtml } from '../shared/receipt-html'
 
 export interface SystemPrinter {
   name: string
@@ -21,6 +33,16 @@ interface ReceiptServiceDependencies {
   settings: SettingsRepository
   listSystemPrinters: () => Promise<SystemPrinter[]>
   printHtml: (html: string, printerName: string) => Promise<void>
+  createPdf: (html: string, saleId: number) => Promise<string>
+  deletePdf: (path: string) => Promise<void>
+  openEmailDraft: (
+    recipient: string,
+    subject: string,
+    body: string,
+    pdfPath: string
+  ) => Promise<boolean>
+  openExternal: (url: string) => Promise<void>
+  showItemInFolder: (path: string) => void
 }
 
 export class ReceiptServiceError extends Error {
@@ -37,8 +59,14 @@ export function createReceiptService({
   sales,
   settings,
   listSystemPrinters,
-  printHtml
+  printHtml,
+  createPdf,
+  deletePdf,
+  openEmailDraft,
+  openExternal,
+  showItemInFolder
 }: ReceiptServiceDependencies) {
+  const generatedPdfBySale = new Map<number, string>()
   return {
     async listPrinters(): Promise<PrinterOption[]> {
       return (await listSystemPrinters())
@@ -49,30 +77,17 @@ export function createReceiptService({
 
     getSettings(): ReceiptSettings {
       const value = settings.get()
-      return {
-        printerName: value.printer_name,
-        autoPrintReceipt: value.auto_print_receipt === 1
-      }
+      return { printerName: value.printer_name }
     },
 
     async saveSettings(value: unknown): Promise<ReceiptSettings> {
       const parsed = parseReceiptSettings(value)
-      if (parsed.autoPrintReceipt && !parsed.printerName) {
-        throw new ReceiptServiceError(
-          'printer-not-selected',
-          'Select a receipt printer before turning on automatic printing.'
-        )
-      }
-
       if (parsed.printerName) {
         await ensurePrinterAvailable(parsed.printerName)
       }
 
-      const saved = settings.saveReceipt(parsed.printerName, parsed.autoPrintReceipt)
-      return {
-        printerName: saved.printer_name,
-        autoPrintReceipt: saved.auto_print_receipt === 1
-      }
+      const saved = settings.saveReceipt(parsed.printerName)
+      return { printerName: saved.printer_name }
     },
 
     async print(saleIdValue: unknown): Promise<ReceiptPrintResult> {
@@ -92,7 +107,10 @@ export function createReceiptService({
         throw new ReceiptServiceError('sale-not-found', 'This sale could not be found.')
       }
 
-      const html = renderReceiptHtml(sale, currentSettings.business_name)
+      const html = renderReceiptTemplate(
+        toReceiptTemplateSale(sale),
+        toReceiptBusiness(currentSettings)
+      )
       try {
         await printHtml(html, printerName)
       } catch (error) {
@@ -104,6 +122,100 @@ export function createReceiptService({
       }
 
       return { saleId, sentToPrinter: true }
+    },
+
+    async emailDraft(
+      saleIdValue: unknown,
+      recipientValue: unknown
+    ): Promise<ReceiptEmailDraftResult> {
+      const saleId = parseSaleId(saleIdValue)
+      const recipient = parseEmail(recipientValue)
+      const sale = getSale(saleId)
+      const currentSettings = settings.get()
+      const transactionLabel = sale.transaction_type === 'return' ? 'Return' : 'Invoice'
+      const amountLabel = sale.transaction_type === 'return' ? 'Refunded' : 'Total'
+      const transactionTotal = signedAmount(sale.total_cents, sale.transaction_type)
+      const subject = `Receipt from ${currentSettings.business_name} · ${transactionLabel} #${sale.transaction_number}`
+      const body = [
+        `Attached is your receipt from ${currentSettings.business_name}.`,
+        `${transactionLabel} #${sale.transaction_number} · ${amountLabel} ${formatMoney(transactionTotal)}`,
+        currentSettings.business_email ? `Store contact: ${currentSettings.business_email}` : ''
+      ]
+        .filter(Boolean)
+        .join('\n')
+      const pdfPath = await createReceiptPdf(sale, currentSettings, saleId)
+      const oldPdfPath = generatedPdfBySale.get(saleId)
+      if (oldPdfPath) void deletePdf(oldPdfPath).catch(() => {})
+      generatedPdfBySale.set(saleId, pdfPath)
+      const attachmentIncluded = await openEmailDraft(recipient, subject, body, pdfPath).catch(
+        () => false
+      )
+
+      if (attachmentIncluded) {
+        generatedPdfBySale.delete(saleId)
+        void deletePdf(pdfPath).catch(() => {})
+      }
+
+      const draftOpened = attachmentIncluded
+        ? true
+        : await openExternal(buildMailtoUrl(recipient, subject, body)).then(
+            () => true,
+            () => false
+          )
+
+      return { saleId, draftOpened, attachmentIncluded, subject, body }
+    },
+
+    async textDraft(
+      saleIdValue: unknown,
+      recipientValue: unknown
+    ): Promise<ReceiptTextDraftResult> {
+      const saleId = parseSaleId(saleIdValue)
+      const recipient = parsePhone(recipientValue)
+      const sale = getSale(saleId)
+      const currentSettings = settings.get()
+      const dateTime = formatReceiptDateTime(sale.created_at)
+      const transactionLabel = sale.transaction_type === 'return' ? 'Return' : 'Invoice'
+      const amountLabel = sale.transaction_type === 'return' ? 'Refunded' : 'Total'
+      const message = `${currentSettings.business_name} · ${transactionLabel} #${sale.transaction_number} · ${dateTime.date} ${dateTime.time} · ${amountLabel} ${formatMoney(signedAmount(sale.total_cents, sale.transaction_type))}`
+      const draftOpened = await openExternal(buildTextUrl(recipient, message)).then(
+        () => true,
+        () => false
+      )
+      return { saleId, draftOpened, message }
+    },
+
+    async openPdf(saleIdValue: unknown): Promise<ReceiptPdfResult> {
+      const saleId = parseSaleId(saleIdValue)
+      let path = generatedPdfBySale.get(saleId)
+      if (!path) {
+        path = await createReceiptPdf(getSale(saleId), settings.get(), saleId)
+        generatedPdfBySale.set(saleId, path)
+      }
+      showItemInFolder(path)
+      return { saleId, opened: true }
+    }
+  }
+
+  function getSale(saleId: number): SaleDetailRecord {
+    const sale = sales.getById(saleId)
+    if (!sale) throw new ReceiptServiceError('sale-not-found', 'This sale could not be found.')
+    return sale
+  }
+
+  async function createReceiptPdf(
+    sale: SaleDetailRecord,
+    currentSettings: ReturnType<SettingsRepository['get']>,
+    saleId: number
+  ): Promise<string> {
+    try {
+      return await createPdf(
+        renderReceiptTemplate(toReceiptTemplateSale(sale), toReceiptBusiness(currentSettings)),
+        saleId
+      )
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'PDF rendering failed.'
+      throw new ReceiptServiceError('pdf-failed', `Receipt PDF could not be created. ${reason}`)
     }
   }
 
@@ -147,64 +259,50 @@ export function toPrinterOption(printer: SystemPrinter): PrinterOption {
   }
 }
 
-export function renderReceiptHtml(sale: SaleDetailRecord, businessName: string): string {
-  const esc = escapeHtml
-  const items = sale.items
-    .map(
-      (item) => `<tr>
-        <td class="item-name">${esc(item.product_name)}<small>${esc(item.sku)}</small><small>${formatMoney(item.unit_price_cents)} each</small></td>
-        <td class="item-quantity">${item.quantity}</td>
-        <td class="item-total">${formatMoney(item.line_total_cents)}</td>
-      </tr>`
-    )
-    .join('')
+function toReceiptTemplateSale(sale: SaleDetailRecord): ReceiptTemplateSale {
+  return {
+    transactionNumber: sale.transaction_number,
+    transactionType: sale.transaction_type,
+    createdAt: sale.created_at,
+    items: sale.items.map((item) => ({
+      sku: item.sku,
+      description: item.product_name,
+      quantity: item.quantity,
+      unitPriceCents: signedAmount(item.unit_price_cents, sale.transaction_type),
+      lineTotalCents: signedAmount(item.line_total_cents, sale.transaction_type)
+    })),
+    subtotalCents: signedAmount(sale.subtotal_cents, sale.transaction_type),
+    taxes: sale.tax_breakdown.map((tax) => ({
+      name: tax.tax_name,
+      rateBasisPoints: tax.rate_basis_points,
+      taxCents: signedAmount(tax.tax_cents, sale.transaction_type)
+    })),
+    taxCents: signedAmount(sale.tax_cents, sale.transaction_type),
+    totalCents: signedAmount(sale.total_cents, sale.transaction_type),
+    payments: sale.payments.map((payment) => ({
+      type: payment.payment_type,
+      amountTenderedCents:
+        payment.amount_tendered_cents === null
+          ? null
+          : signedAmount(payment.amount_tendered_cents, sale.transaction_type),
+      amountAppliedCents: signedAmount(payment.amount_applied_cents, sale.transaction_type),
+      changeCents: payment.change_cents
+    }))
+  }
+}
 
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Receipt #${sale.id}</title>
-  <style>
-    @page { margin: 0; }
-    * { box-sizing: border-box; }
-    body { width: 80mm; margin: 0; padding: 4mm; color: #111; font: 12px/1.35 Arial, sans-serif; }
-    header { text-align: center; margin-bottom: 12px; }
-    h1 { margin: 0 0 5px; font-size: 18px; overflow-wrap: anywhere; }
-    p { margin: 2px 0; }
-    .muted { color: #444; }
-    table { width: 100%; border-collapse: collapse; }
-    th { padding: 6px 0; border-top: 1px dashed #777; border-bottom: 1px dashed #777; text-align: left; font-size: 10px; }
-    td { padding: 7px 0; vertical-align: top; }
-    .item-name { width: 58%; overflow-wrap: anywhere; }
-    .item-name small { display: block; color: #444; font-size: 10px; }
-    .item-quantity { width: 12%; text-align: center; }
-    .item-total { width: 30%; text-align: right; white-space: nowrap; }
-    .totals { margin-top: 8px; padding-top: 7px; border-top: 1px dashed #777; }
-    .totals div { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; }
-    .total { margin-top: 4px; padding-top: 6px !important; border-top: 1px solid #111; font-size: 15px; font-weight: 700; }
-    footer { margin-top: 13px; padding-top: 8px; border-top: 1px dashed #777; text-align: center; }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>${esc(businessName)}</h1>
-    <p>Sale #${sale.id}</p>
-    <p class="muted">${esc(sale.created_at)}</p>
-  </header>
-  <table aria-label="Purchased items">
-    <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right">Amount</th></tr></thead>
-    <tbody>${items}</tbody>
-  </table>
-  <section class="totals" aria-label="Sale totals">
-    <div><span>Subtotal</span><span>${formatMoney(sale.subtotal_cents)}</span></div>
-    <div><span>Tax</span><span>${formatMoney(sale.tax_cents)}</span></div>
-    <div class="total"><span>Total</span><span>${formatMoney(sale.total_cents)}</span></div>
-    <div><span>Payment</span><span>${esc(sale.payment_method.toUpperCase())}</span></div>
-  </section>
-  <footer><p>Thank you for your purchase</p></footer>
-</body>
-</html>`
+function toReceiptBusiness(settings: SettingsRecord): ReceiptBusinessDetails {
+  return {
+    businessName: settings.business_name,
+    businessAddress: settings.business_address,
+    businessCity: settings.business_city,
+    businessProvince: settings.business_province,
+    businessPostalCode: settings.business_postal_code,
+    businessPhone: settings.business_phone,
+    businessEmail: settings.business_email,
+    businessGstNumber: settings.business_gst_number,
+    businessWebsite: settings.business_website
+  }
 }
 
 function parseReceiptSettings(value: unknown): ReceiptSettings {
@@ -214,18 +312,46 @@ function parseReceiptSettings(value: unknown): ReceiptSettings {
   if (value.printerName !== null && typeof value.printerName !== 'string') {
     throw new ReceiptServiceError('invalid-input', 'Choose a valid receipt printer.')
   }
-  if (typeof value.autoPrintReceipt !== 'boolean') {
-    throw new ReceiptServiceError(
-      'invalid-input',
-      'Choose whether to print receipts automatically.'
-    )
-  }
-
   const printerName = typeof value.printerName === 'string' ? value.printerName : null
   if (printerName !== null && printerName.trim() === '') {
     throw new ReceiptServiceError('invalid-input', 'Choose a valid receipt printer.')
   }
-  return { printerName, autoPrintReceipt: value.autoPrintReceipt }
+  return { printerName }
+}
+
+function parseEmail(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new ReceiptServiceError('invalid-input', 'Enter a valid email address.')
+  }
+  const email = value.trim()
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new ReceiptServiceError('invalid-input', 'Enter a valid email address.')
+  }
+  return email
+}
+
+function parsePhone(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new ReceiptServiceError('invalid-input', 'Enter a valid phone number.')
+  }
+  const phone = value.trim()
+  const normalized = phone.replace(/[\s().-]/g, '')
+  if (!/^\+?\d{7,15}$/.test(normalized)) {
+    throw new ReceiptServiceError('invalid-input', 'Enter a phone number with 7 to 15 digits.')
+  }
+  return normalized
+}
+
+export function buildMailtoUrl(recipient: string, subject: string, body: string): string {
+  const query = new URLSearchParams({ subject, body })
+  return `mailto:${encodeURIComponent(recipient)}?${query.toString()}`
+}
+
+export function buildTextUrl(recipient: string, body: string, platform = process.platform): string {
+  const query = new URLSearchParams({ Addresses: recipient, Body: body })
+  return platform === 'win32'
+    ? `ms-chat:?${query.toString()}`
+    : `sms:${encodeURIComponent(recipient)}?body=${encodeURIComponent(body)}`
 }
 
 function parseSaleId(value: unknown): number {
@@ -239,17 +365,8 @@ function formatMoney(cents: number): string {
   return new Intl.NumberFormat('en-CA', { style: 'currency', currency: 'CAD' }).format(cents / 100)
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => {
-    const entities: Record<string, string> = {
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;'
-    }
-    return entities[character]!
-  })
+function signedAmount(cents: number, type: 'sale' | 'return'): number {
+  return type === 'return' ? (cents === 0 ? 0 : -cents) : cents
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

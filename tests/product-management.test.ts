@@ -127,6 +127,17 @@ test('reserves SKUs across active and inactive products and excludes inactive lo
   })
 })
 
+test('return SKU lookup includes inactive catalog products while sale lookup excludes them', () => {
+  withProductService((service) => {
+    const product = service.create({ ...validInput, sku: 'RETURNABLE' })
+    service.setActive(product.id, false)
+
+    assert.equal(service.getBySku('RETURNABLE'), null)
+    assert.equal(service.getBySkuForReturn(' returnable ')?.id, product.id)
+    assert.equal(service.getBySkuForReturn('missing'), null)
+  })
+})
+
 test('releases the former SKU when an active product is edited', () => {
   withProductService((service) => {
     const product = service.create({ ...validInput, sku: 'OLD-SKU' })

@@ -1,4 +1,4 @@
-import type { Product } from '../../shared/pos-api'
+import type { PriceOverrideInput, Product } from '../../shared/pos-api'
 
 export interface CartLine {
   productId: number
@@ -6,6 +6,8 @@ export interface CartLine {
   name: string
   unitPriceCents: number
   quantity: number
+  priceOverride?: PriceOverrideInput
+  restock?: boolean
 }
 
 export function addProductToCart(cart: CartLine[], product: Product | null): CartLine[] {
@@ -42,6 +44,19 @@ export function changeCartQuantity(
   })
 }
 
+export function overrideCartPrice(
+  cart: CartLine[],
+  productId: number,
+  unitPriceCents: number,
+  reason: string
+): CartLine[] {
+  return cart.map((line) =>
+    line.productId === productId
+      ? { ...line, priceOverride: { unitPriceCents, reason: reason.trim() } }
+      : line
+  )
+}
+
 export function removeCartProduct(cart: CartLine[], productId: number): CartLine[] {
   return cart.filter((line) => line.productId !== productId)
 }
@@ -51,5 +66,9 @@ export function clearCart(cart: CartLine[]): CartLine[] {
 }
 
 export function calculateSubtotalCents(cart: CartLine[]): number {
-  return cart.reduce((subtotal, line) => subtotal + line.unitPriceCents * line.quantity, 0)
+  return cart.reduce(
+    (subtotal, line) =>
+      subtotal + (line.priceOverride?.unitPriceCents ?? line.unitPriceCents) * line.quantity,
+    0
+  )
 }

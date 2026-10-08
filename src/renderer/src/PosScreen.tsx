@@ -1,13 +1,39 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Dispatch, FormEvent, SetStateAction } from 'react'
-import type { CheckoutQuote, PaymentMethod, SaleDetail } from '../../shared/pos-api'
+import type {
+  CheckoutQuote,
+  ReturnQuote,
+  SaleDetail,
+  TenderInput,
+  TenderType
+} from '../../shared/pos-api'
+import ReceiptDialog from './ReceiptDialog'
 import {
   addProductToCart,
   changeCartQuantity,
   clearCart,
+  overrideCartPrice,
   removeCartProduct,
   type CartLine
 } from './cart'
+import {
+  allocateReturnPayouts,
+  allocateTenders,
+  centsInput,
+  parseCadCents,
+  tenderLabel,
+  totalTenderedCents,
+  type CheckoutSession
+} from './checkout'
+import {
+  isTextEntryTarget,
+  nextCartLineIndex,
+  nextDirectionalFocusIndex,
+  nextPaymentMethodIndex,
+  resolveRegisterShortcut,
+  shouldPreserveNativeArrow,
+  shouldUnfocusSkuOnEscape
+} from './register-keyboard'
 
 const currencyFormatter = new Intl.NumberFormat('en-CA', {
   style: 'currency',
@@ -17,43 +43,107 @@ const currencyFormatter = new Intl.NumberFormat('en-CA', {
 interface PosScreenProps {
   cart: CartLine[]
   setCart: Dispatch<SetStateAction<CartLine[]>>
+  checkoutSession: CheckoutSession | null
+  setCheckoutSession: Dispatch<SetStateAction<CheckoutSession | null>>
+  mode: 'sale' | 'return'
+  setMode: Dispatch<SetStateAction<'sale' | 'return'>>
+  returnReason: string
+  setReturnReason: Dispatch<SetStateAction<string>>
+  onNavigateToProducts: () => void
 }
 
 interface QuoteState {
   cart: CartLine[]
-  quote?: CheckoutQuote
+  mode: 'sale' | 'return'
+  returnReason: string
+  retryKey: number
+  quote?: CheckoutQuote | ReturnQuote
   error?: string
 }
 
-function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
+type QuoteItem = CheckoutQuote['items'][number]
+
+function PosScreen({
+  cart,
+  setCart,
+  checkoutSession,
+  setCheckoutSession,
+  mode,
+  setMode,
+  returnReason,
+  setReturnReason,
+  onNavigateToProducts
+}: PosScreenProps): React.JSX.Element {
   const [skuInput, setSkuInput] = useState('')
   const [lookupMessage, setLookupMessage] = useState('')
   const [lookupIsError, setLookupIsError] = useState(false)
   const [pendingLookups, setPendingLookups] = useState(0)
   const [quoteState, setQuoteState] = useState<QuoteState | null>(null)
   const [quoteRetryKey, setQuoteRetryKey] = useState(0)
-  const [pendingPayment, setPendingPayment] = useState<PaymentMethod | null>(null)
+  const [paymentMethodPickerOpen, setPaymentMethodPickerOpen] = useState(false)
+  const [tenderDialogType, setTenderDialogType] = useState<TenderType | null>(null)
+  const [paymentActive, setPaymentActive] = useState(false)
+  const [priceDialogLine, setPriceDialogLine] = useState<QuoteItem | null>(null)
+  const [lineSelectionMode, setLineSelectionMode] = useState<'remove' | 'price' | null>(null)
+  const [selectedCartLineIndex, setSelectedCartLineIndex] = useState<number | null>(null)
+  const [confirmTransaction, setConfirmTransaction] = useState(false)
   const [savingSale, setSavingSale] = useState(false)
   const [checkoutError, setCheckoutError] = useState('')
   const [completedSale, setCompletedSale] = useState<SaleDetail | null>(null)
-  const [printingReceipt, setPrintingReceipt] = useState(false)
-  const [receiptSent, setReceiptSent] = useState(false)
-  const [receiptError, setReceiptError] = useState('')
+  const [receiptDialogSale, setReceiptDialogSale] = useState<SaleDetail | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const registerRef = useRef<HTMLElement>(null)
+  const clearCartButtonRef = useRef<HTMLButtonElement>(null)
+  const cartLineRowRefs = useRef(new Map<number, HTMLTableRowElement>())
+  const addPaymentButtonRef = useRef<HTMLButtonElement>(null)
+  const completeTransactionButtonRef = useRef<HTMLButtonElement>(null)
   const lookupQueue = useRef<Promise<void>>(Promise.resolve())
   const itemCount = cart.reduce((count, line) => count + line.quantity, 0)
-  const quote = quoteState?.cart === cart ? (quoteState.quote ?? null) : null
-  const quoteError = quoteState?.cart === cart ? (quoteState.error ?? '') : ''
-  const quoteLoading = cart.length > 0 && quoteState?.cart !== cart
+  const quoteMatchesCurrentCart =
+    quoteState?.cart === cart &&
+    quoteState.mode === mode &&
+    quoteState.returnReason === returnReason &&
+    quoteState.retryKey === quoteRetryKey
+  const quote = quoteMatchesCurrentCart ? (quoteState.quote ?? null) : null
+  const returnReasonMissing = mode === 'return' && cart.length > 0 && !returnReason.trim()
+  const quoteError = quoteMatchesCurrentCart
+    ? (quoteState.error ?? '')
+    : returnReasonMissing
+      ? 'Enter a reason for this return before calculating its refund.'
+      : ''
+  const quoteLoading = cart.length > 0 && !quoteMatchesCurrentCart && !returnReasonMissing
   const displayLines = quote?.items ?? cart
-
-  const beginCheckout = useCallback(
-    (paymentMethod: PaymentMethod): void => {
-      if (!quote || quoteLoading || pendingLookups > 0 || savingSale || pendingPayment) return
-      setCheckoutError('')
-      setPendingPayment(paymentMethod)
+  const tenders = checkoutSession?.tenders ?? []
+  const selectedCartLine =
+    selectedCartLineIndex === null ? null : (cart[selectedCartLineIndex] ?? null)
+  const paymentTargetCents = quote ? Math.abs(quote.totalCents) : 0
+  const tenderSummary = quote
+    ? mode === 'return'
+      ? allocateReturnPayouts(paymentTargetCents, tenders)
+      : allocateTenders(paymentTargetCents, tenders)
+    : null
+  const sessionNeedsResume = checkoutSession !== null && !paymentActive
+  const cartLocked =
+    savingSale || checkoutSession !== null || paymentActive || lineSelectionMode !== null
+  const checkoutDisabled =
+    !quote || quoteLoading || pendingLookups > 0 || savingSale || lineSelectionMode !== null
+  const focusCartLineAtIndex = useCallback(
+    (index: number): void => {
+      const productId = cart[index]?.productId
+      if (productId === undefined) return
+      window.requestAnimationFrame(() => cartLineRowRefs.current.get(productId)?.focus())
     },
-    [pendingLookups, pendingPayment, quote, quoteLoading, savingSale]
+    [cart]
+  )
+  const startLineSelection = useCallback(
+    (selectionMode: 'remove' | 'price'): void => {
+      if (!cart.length || cartLocked || pendingLookups > 0) return
+      if (selectionMode === 'price' && (mode !== 'sale' || !quote)) return
+      setLineSelectionMode(selectionMode)
+      setSelectedCartLineIndex(0)
+      focusCartLineAtIndex(0)
+    },
+    [cart.length, cartLocked, focusCartLineAtIndex, mode, pendingLookups, quote]
   )
 
   useEffect(() => {
@@ -62,62 +152,362 @@ function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
 
   useEffect(() => {
     let current = true
-    if (cart.length === 0) return
-    const items = cart.map(({ productId, quantity }) => ({ productId, quantity }))
-    void window.pos.sales
-      .quote(items)
+    if (cart.length === 0) {
+      return
+    }
+    if (mode === 'return' && !returnReason.trim()) {
+      return
+    }
+    const operation =
+      mode === 'return'
+        ? window.pos.sales.quoteReturn({
+            reason: returnReason,
+            items: cart.map(({ productId, quantity, restock }) => ({
+              productId,
+              quantity,
+              restock: restock ?? false
+            }))
+          })
+        : window.pos.sales.quote(
+            cart.map(({ productId, quantity, priceOverride }) => ({
+              productId,
+              quantity,
+              ...(priceOverride && { priceOverride })
+            }))
+          )
+    void operation
       .then((result) => {
         if (!current) return
         if (result.ok) {
-          setQuoteState({ cart, quote: result.data })
+          setQuoteState({ cart, mode, returnReason, retryKey: quoteRetryKey, quote: result.data })
         } else {
-          setQuoteState({ cart, error: result.error.message })
+          setQuoteState({
+            cart,
+            mode,
+            returnReason,
+            retryKey: quoteRetryKey,
+            error: result.error.message
+          })
         }
       })
       .catch(() => {
-        if (current)
-          setQuoteState({ cart, error: 'Sale totals could not be calculated. Try again.' })
+        if (current) {
+          setQuoteState({
+            cart,
+            mode,
+            returnReason,
+            retryKey: quoteRetryKey,
+            error: `${mode === 'return' ? 'Return' : 'Sale'} totals could not be calculated. Try again.`
+          })
+        }
       })
 
     return () => {
       current = false
     }
-  }, [cart, quoteRetryKey])
+  }, [cart, mode, quoteRetryKey, returnReason])
 
   useEffect(() => {
-    if (!pendingPayment && !savingSale) inputRef.current?.focus()
-  }, [pendingPayment, savingSale])
+    if (
+      !paymentMethodPickerOpen &&
+      !tenderDialogType &&
+      !priceDialogLine &&
+      !confirmTransaction &&
+      !receiptDialogSale &&
+      !paymentActive &&
+      !savingSale
+    ) {
+      inputRef.current?.focus()
+    }
+  }, [
+    paymentMethodPickerOpen,
+    tenderDialogType,
+    priceDialogLine,
+    confirmTransaction,
+    receiptDialogSale,
+    paymentActive,
+    savingSale
+  ])
+
+  const beginTender = useCallback(
+    (type: TenderType): void => {
+      if (
+        checkoutDisabled ||
+        tenderSummary?.valid === false ||
+        tenderSummary?.remainingCents === 0 ||
+        tenderDialogType ||
+        priceDialogLine ||
+        confirmTransaction
+      )
+        return
+      setCheckoutError('')
+      setPaymentActive(true)
+      setTenderDialogType(type)
+    },
+    [checkoutDisabled, confirmTransaction, priceDialogLine, tenderDialogType, tenderSummary]
+  )
+
+  const openTenderPicker = useCallback((): void => {
+    if (
+      checkoutDisabled ||
+      tenderSummary?.valid === false ||
+      tenderSummary?.remainingCents === 0 ||
+      paymentMethodPickerOpen ||
+      tenderDialogType ||
+      priceDialogLine ||
+      confirmTransaction
+    )
+      return
+    setCheckoutError('')
+    if (checkoutSession && !paymentActive) setPaymentActive(true)
+    setPaymentMethodPickerOpen(true)
+  }, [
+    checkoutDisabled,
+    checkoutSession,
+    confirmTransaction,
+    paymentActive,
+    paymentMethodPickerOpen,
+    priceDialogLine,
+    tenderDialogType,
+    tenderSummary
+  ])
+
+  const changeRegisterMode = useCallback(
+    (nextMode: 'sale' | 'return'): void => {
+      if (nextMode === mode || pendingLookups > 0) return
+      if (
+        (cart.length > 0 || (checkoutSession?.tenders.length ?? 0) > 0) &&
+        !window.confirm(
+          `Switch to ${nextMode === 'return' ? 'Return' : 'Sale'} mode and clear the current cart and staged payments?`
+        )
+      ) {
+        return
+      }
+      setCart([])
+      setCheckoutSession(null)
+      setPaymentActive(false)
+      setTenderDialogType(null)
+      setPaymentMethodPickerOpen(false)
+      setPriceDialogLine(null)
+      setConfirmTransaction(false)
+      setReturnReason('')
+      setQuoteState(null)
+      setQuoteRetryKey((key) => key + 1)
+      setCheckoutError('')
+      setCompletedSale(null)
+      setReceiptDialogSale(null)
+      setMode(nextMode)
+      window.requestAnimationFrame(() => inputRef.current?.focus())
+    },
+    [
+      cart.length,
+      checkoutSession,
+      mode,
+      pendingLookups,
+      setCart,
+      setCheckoutSession,
+      setMode,
+      setReturnReason
+    ]
+  )
 
   useEffect(() => {
+    function navigateWithArrow(event: KeyboardEvent): void {
+      if (
+        event.defaultPrevented ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        event.repeat ||
+        shouldPreserveNativeArrow(event.key, event.target)
+      ) {
+        return
+      }
+
+      const openDialog = document.querySelector<HTMLDialogElement>('dialog[open]')
+      const scope: ParentNode | null = openDialog ?? registerRef.current
+      if (!scope) return
+
+      const candidates = Array.from(
+        scope.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])'
+        )
+      ).filter((element) => element.tabIndex >= 0 && element.getClientRects().length > 0)
+      const currentIndex = candidates.indexOf(document.activeElement as HTMLElement)
+      const nextIndex = nextDirectionalFocusIndex(
+        currentIndex,
+        candidates.map((element) => {
+          const rect = element.getBoundingClientRect()
+          return { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+        }),
+        event.key
+      )
+
+      if (nextIndex === null) return
+      event.preventDefault()
+      candidates[nextIndex]?.focus()
+    }
+
     function handlePosShortcut(event: KeyboardEvent): void {
-      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.repeat) return
-      if (pendingPayment || savingSale) return
+      const hasNoModifiers = !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+      const reservedFunctionKey = ['F2', 'F3', 'F4', 'F5', 'F6', 'F9'].includes(event.key)
+      if (hasNoModifiers && reservedFunctionKey) event.preventDefault()
 
-      if (event.key === 'F2') {
+      if (lineSelectionMode !== null && hasNoModifiers) {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          setLineSelectionMode(null)
+          setSelectedCartLineIndex(null)
+          window.requestAnimationFrame(() => inputRef.current?.focus())
+          return
+        }
+
+        if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+          event.preventDefault()
+          if (event.repeat) return
+          const nextIndex = nextCartLineIndex(selectedCartLineIndex ?? 0, event.key, cart.length)
+          if (nextIndex !== null) {
+            setSelectedCartLineIndex(nextIndex)
+            focusCartLineAtIndex(nextIndex)
+          }
+          return
+        }
+
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          if (event.repeat) return
+          const selectedLine =
+            selectedCartLineIndex === null ? undefined : cart[selectedCartLineIndex]
+          if (!selectedLine) return
+
+          if (lineSelectionMode === 'remove') {
+            setCart((current) => removeCartProduct(current, selectedLine.productId))
+            setLookupMessage(
+              `${selectedLine.name} removed from the ${mode === 'return' ? 'return' : 'sale'}.`
+            )
+            setLookupIsError(false)
+            setCompletedSale(null)
+            setReceiptDialogSale(null)
+            setCheckoutError('')
+            setLineSelectionMode(null)
+            setSelectedCartLineIndex(null)
+            window.requestAnimationFrame(() => inputRef.current?.focus())
+          } else {
+            const quotedLine = displayLines[selectedCartLineIndex ?? 0]
+            if (mode === 'sale' && quotedLine) {
+              setPriceDialogLine(quotedLine as QuoteItem)
+              setLineSelectionMode(null)
+              setSelectedCartLineIndex(null)
+            }
+          }
+          return
+        }
+      }
+
+      const dialogOpen =
+        document.querySelector('dialog[open]') !== null ||
+        paymentMethodPickerOpen ||
+        tenderDialogType !== null ||
+        priceDialogLine !== null ||
+        confirmTransaction ||
+        receiptDialogSale !== null ||
+        lineSelectionMode !== null
+
+      if (
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey &&
+        !event.repeat &&
+        shouldUnfocusSkuOnEscape(event.key, document.activeElement === inputRef.current, dialogOpen)
+      ) {
         event.preventDefault()
+        inputRef.current?.blur()
+        return
+      }
+
+      navigateWithArrow(event)
+
+      const action = resolveRegisterShortcut({
+        key: event.key,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        repeat: event.repeat,
+        textEntryFocused: isTextEntryTarget(event.target),
+        dialogOpen,
+        skuEnabled: !cartLocked,
+        productsEnabled: pendingLookups === 0 && !savingSale,
+        clearEnabled: cart.length > 0 && !cartLocked && pendingLookups === 0,
+        lineSelectionEnabled: cart.length > 0 && !cartLocked && pendingLookups === 0,
+        priceEditEnabled:
+          cart.length > 0 &&
+          !cartLocked &&
+          pendingLookups === 0 &&
+          mode === 'sale' &&
+          quote !== null,
+        paymentEnabled:
+          !checkoutDisabled && tenderSummary?.valid !== false && tenderSummary?.remainingCents !== 0
+      })
+
+      if (!action) return
+      event.preventDefault()
+
+      if (action === 'focus-sku') {
         inputRef.current?.focus()
-      } else if (event.key === 'F4') {
-        event.preventDefault()
-        beginCheckout('cash')
-      } else if (event.key === 'F5') {
-        event.preventDefault()
-        beginCheckout('card')
+      } else if (action === 'toggle-mode') {
+        changeRegisterMode(mode === 'sale' ? 'return' : 'sale')
+      } else if (action === 'navigate-products') {
+        onNavigateToProducts()
+      } else if (action === 'clear-cart') {
+        clearCartButtonRef.current?.click()
+      } else if (action === 'select-line-for-removal') {
+        startLineSelection('remove')
+      } else if (action === 'select-line-for-price') {
+        startLineSelection('price')
+      } else if (action === 'open-payment') {
+        openTenderPicker()
       }
     }
 
     window.addEventListener('keydown', handlePosShortcut)
     return () => window.removeEventListener('keydown', handlePosShortcut)
-  }, [beginCheckout, pendingPayment, savingSale])
+  }, [
+    cartLocked,
+    cart,
+    changeRegisterMode,
+    checkoutDisabled,
+    displayLines,
+    focusCartLineAtIndex,
+    lineSelectionMode,
+    mode,
+    onNavigateToProducts,
+    openTenderPicker,
+    pendingLookups,
+    paymentMethodPickerOpen,
+    priceDialogLine,
+    quote,
+    confirmTransaction,
+    receiptDialogSale,
+    savingSale,
+    selectedCartLineIndex,
+    setCart,
+    startLineSelection,
+    tenderDialogType,
+    tenderSummary
+  ])
 
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault()
+    if (cartLocked) return
     const sku = skuInput.trim()
     setSkuInput('')
     setLookupMessage('')
     setLookupIsError(false)
     setCompletedSale(null)
-    setReceiptSent(false)
-    setReceiptError('')
+    setReceiptDialogSale(null)
     inputRef.current?.focus()
 
     if (!sku) return
@@ -125,7 +515,10 @@ function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
     setPendingLookups((count) => count + 1)
     lookupQueue.current = lookupQueue.current.then(async () => {
       try {
-        const result = await window.pos.products.getBySku(sku)
+        const result =
+          mode === 'return'
+            ? await window.pos.products.getBySkuForReturn(sku)
+            : await window.pos.products.getBySku(sku)
         if (!result.ok) {
           setLookupMessage(result.error.message)
           setLookupIsError(true)
@@ -134,7 +527,7 @@ function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
           setLookupIsError(true)
         } else {
           setCart((current) => addProductToCart(current, result.data))
-          setLookupMessage(`${result.data.name} added to cart.`)
+          setLookupMessage(`${result.data.name} added to ${mode === 'return' ? 'return' : 'sale'}.`)
           setLookupIsError(false)
         }
       } catch {
@@ -148,7 +541,7 @@ function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
   }
 
   function handleClearCart(): void {
-    if (cart.length === 0 || savingSale) return
+    if (cart.length === 0 || cartLocked) return
     const itemLabel = itemCount === 1 ? 'item' : 'items'
     if (!window.confirm(`Clear all ${itemCount} ${itemLabel} from the cart?`)) return
     setCart((current) => clearCart(current))
@@ -156,62 +549,151 @@ function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
     setLookupIsError(false)
     setCheckoutError('')
     setCompletedSale(null)
-    setReceiptSent(false)
-    setReceiptError('')
-    inputRef.current?.focus()
+    setReceiptDialogSale(null)
+    window.requestAnimationFrame(() => inputRef.current?.focus())
   }
 
-  async function completeSale(): Promise<void> {
-    if (!pendingPayment || !quote || savingSale) return
+  function stageTender(tender: TenderInput): string | null {
+    if (!quote) return `${mode === 'return' ? 'Return' : 'Sale'} totals are still loading.`
+    const nextTenders = [...tenders, tender]
+    const nextSummary =
+      mode === 'return'
+        ? allocateReturnPayouts(Math.abs(quote.totalCents), nextTenders)
+        : allocateTenders(quote.totalCents, nextTenders)
+    if (!nextSummary.valid) return nextSummary.error
+    const balanceWasOpen = (tenderSummary?.remainingCents ?? paymentTargetCents) > 0
+    setCheckoutSession({ tenders: nextTenders })
+    setPaymentActive(true)
+    setTenderDialogType(null)
+    setCheckoutError('')
+    if (balanceWasOpen && nextSummary.remainingCents === 0) {
+      setConfirmTransaction(true)
+    } else if (nextSummary.remainingCents > 0) {
+      window.requestAnimationFrame(() => addPaymentButtonRef.current?.focus())
+    }
+    return null
+  }
+
+  function cancelTenderPicker(): void {
+    setPaymentMethodPickerOpen(false)
+    window.requestAnimationFrame(() => addPaymentButtonRef.current?.focus())
+  }
+
+  function cancelTenderEntry(): void {
+    setTenderDialogType(null)
+    if (!checkoutSession) setPaymentActive(false)
+    window.requestAnimationFrame(() => addPaymentButtonRef.current?.focus())
+  }
+
+  function cancelTransactionConfirmation(): void {
+    setConfirmTransaction(false)
+    window.requestAnimationFrame(() => completeTransactionButtonRef.current?.focus())
+  }
+
+  function removeTender(index: number): void {
+    const nextTenders = tenders.filter((_, tenderIndex) => tenderIndex !== index)
+    setCheckoutSession(nextTenders.length > 0 ? { tenders: nextTenders } : null)
+    setCheckoutError('')
+    const nextSummary = quote
+      ? mode === 'return'
+        ? allocateReturnPayouts(Math.abs(quote.totalCents), nextTenders)
+        : allocateTenders(quote.totalCents, nextTenders)
+      : null
+    window.requestAnimationFrame(() => {
+      if (nextSummary?.valid && nextSummary.remainingCents === 0) {
+        completeTransactionButtonRef.current?.focus()
+      } else {
+        addPaymentButtonRef.current?.focus()
+      }
+    })
+  }
+
+  function discardPaymentSession(): void {
+    if (
+      tenders.length > 0 &&
+      !window.confirm('Discard all staged payments? The cart will remain.')
+    ) {
+      return
+    }
+    setCheckoutSession(null)
+    setTenderDialogType(null)
+    setPaymentActive(false)
+    setCheckoutError('')
+    window.requestAnimationFrame(() => addPaymentButtonRef.current?.focus())
+  }
+
+  function resumePayment(): void {
+    setPaymentActive(true)
+    window.requestAnimationFrame(() => addPaymentButtonRef.current?.focus())
+  }
+
+  function applyPriceOverride(priceCents: number, reason: string): void {
+    if (!priceDialogLine || cartLocked) return
+    setCart((current) => overrideCartPrice(current, priceDialogLine.productId, priceCents, reason))
+    setPriceDialogLine(null)
+    setLookupMessage(`Price updated for ${priceDialogLine.name} in this sale.`)
+    setLookupIsError(false)
+    setCompletedSale(null)
+  }
+
+  async function completeTransaction(): Promise<void> {
+    if (!quote || !tenderSummary?.valid || tenderSummary.remainingCents !== 0 || savingSale) return
     setSavingSale(true)
     setCheckoutError('')
 
     try {
-      const result = await window.pos.sales.completeCheckout({
-        items: cart.map(({ productId, quantity }) => ({ productId, quantity })),
-        paymentMethod: pendingPayment
-      })
-
-      if (!result.ok) {
-        setCheckoutError(result.error.message)
-        return
+      let transaction: SaleDetail
+      if (mode === 'return') {
+        const result = await window.pos.sales.completeReturn({
+          items: cart.map(({ productId, quantity, restock }) => ({
+            productId,
+            quantity,
+            restock: restock ?? false
+          })),
+          reason: returnReason,
+          tenders
+        })
+        if (!result.ok) {
+          setCheckoutError(result.error.message)
+          setConfirmTransaction(false)
+          setQuoteRetryKey((key) => key + 1)
+          return
+        }
+        transaction = result.data.return
+      } else {
+        const result = await window.pos.sales.completeCheckout({
+          items: cart.map(({ productId, quantity, priceOverride }) => ({
+            productId,
+            quantity,
+            ...(priceOverride && { priceOverride })
+          })),
+          tenders
+        })
+        if (!result.ok) {
+          setCheckoutError(result.error.message)
+          setConfirmTransaction(false)
+          setQuoteRetryKey((key) => key + 1)
+          return
+        }
+        transaction = result.data.sale
       }
 
-      const sale = result.data.sale
-      setCompletedSale(sale)
+      setCompletedSale(transaction)
       setCart((current) => clearCart(current))
-      setPendingPayment(null)
+      setCheckoutSession(null)
+      if (mode === 'return') setReturnReason('')
+      setPaymentActive(false)
+      setTenderDialogType(null)
       setLookupMessage('')
       setLookupIsError(false)
-      setReceiptSent(false)
-      setReceiptError('')
-      if (result.data.autoPrintReceipt) void sendReceipt(sale.id)
+      setConfirmTransaction(false)
+      setReceiptDialogSale(transaction)
     } catch {
-      setCheckoutError('The sale could not be saved. Your cart is still available; try again.')
+      setCheckoutError(
+        `The ${mode === 'return' ? 'return' : 'sale'} could not be saved. Your cart and staged payments are still available.`
+      )
     } finally {
       setSavingSale(false)
-    }
-  }
-
-  async function sendReceipt(saleId: number): Promise<void> {
-    if (printingReceipt) return
-    setPrintingReceipt(true)
-    setReceiptError('')
-    try {
-      const result = await window.pos.receipts.print(saleId)
-      if (!result.ok) {
-        setReceiptError(result.error.message)
-        setReceiptSent(false)
-      } else {
-        setReceiptSent(true)
-      }
-    } catch {
-      setReceiptError(
-        'Receipt could not be sent to the printer. The sale is saved and can be reprinted.'
-      )
-      setReceiptSent(false)
-    } finally {
-      setPrintingReceipt(false)
     }
   }
 
@@ -222,122 +704,142 @@ function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
   const subtotal = cart.length === 0 ? 0 : quote?.subtotalCents
   const tax = cart.length === 0 ? 0 : quote?.taxCents
   const total = cart.length === 0 ? 0 : quote?.totalCents
-  const checkoutDisabled = !quote || quoteLoading || pendingLookups > 0 || savingSale
+  const zeroTotal = quote !== null && quote.totalCents === 0
+  const transactionName = mode === 'return' ? 'return' : 'sale'
 
   return (
-    <section className="pos-page" aria-label="Point of sale">
+    <section
+      ref={registerRef}
+      className={`pos-page${mode === 'return' ? ' is-return-mode' : ''}`}
+      aria-label="Point of sale"
+    >
       {completedSale && (
         <div className="sale-success" role="status">
           <span>
-            Sale #{completedSale.id} completed ·{' '}
+            {completedSale.transactionType === 'return' ? 'Return' : 'Invoice'} #
+            {completedSale.transactionNumber}{' '}
+            {completedSale.transactionType === 'return' ? 'recorded' : 'completed'} ·{' '}
             {currencyFormatter.format(completedSale.totalCents / 100)}
           </span>
           <span className="sale-success-actions">
             <button
               className="text-button"
               type="button"
-              disabled={printingReceipt}
-              onClick={() => void sendReceipt(completedSale.id)}
+              onClick={() => setReceiptDialogSale(completedSale)}
             >
-              {printingReceipt ? 'Sending…' : receiptSent ? 'Reprint receipt' : 'Print receipt'}
+              Receipt options
             </button>
             <button
               className="text-button"
               type="button"
               onClick={() => {
                 setCompletedSale(null)
-                setReceiptSent(false)
-                setReceiptError('')
+                setReceiptDialogSale(null)
                 inputRef.current?.focus()
               }}
             >
-              New sale
+              {completedSale.transactionType === 'return' ? 'New return' : 'New sale'}
             </button>
           </span>
-          {receiptError && (
-            <span className="sale-receipt-error" role="alert">
-              {receiptError}
-            </span>
-          )}
-          {printingReceipt && (
-            <span className="sale-receipt-status">Sending receipt to printer…</span>
-          )}
-          {receiptSent && !printingReceipt && (
-            <span className="sale-receipt-status">Receipt sent to printer.</span>
-          )}
+        </div>
+      )}
+
+      <div className="register-mode-bar">
+        <span className="register-mode-label">Register mode</span>
+        <div className="register-mode-toggle" role="group" aria-label="Register mode">
+          <button
+            className={mode === 'sale' ? 'is-active' : ''}
+            type="button"
+            aria-pressed={mode === 'sale'}
+            disabled={pendingLookups > 0 || savingSale || lineSelectionMode !== null}
+            onClick={() => changeRegisterMode('sale')}
+          >
+            Sale
+          </button>
+          <button
+            className={mode === 'return' ? 'is-active' : ''}
+            type="button"
+            aria-pressed={mode === 'return'}
+            disabled={pendingLookups > 0 || savingSale || lineSelectionMode !== null}
+            onClick={() => changeRegisterMode('return')}
+          >
+            Return
+          </button>
+        </div>
+      </div>
+
+      {mode === 'return' && (
+        <div className="pos-return-reason">
+          <label htmlFor="return-reason-input">Reason for return</label>
+          <textarea
+            id="return-reason-input"
+            rows={2}
+            value={returnReason}
+            disabled={cartLocked}
+            onChange={(event) => setReturnReason(event.target.value)}
+            placeholder="Enter why this item is being returned"
+            required
+          />
+          <p>
+            Refunds use the current catalog price and tax rates. Card refunds must be processed on
+            the terminal.
+          </p>
         </div>
       )}
 
       <div className="pos-register-layout">
         <div className="pos-workspace">
-          <div className="pos-entry-card">
-            <div className="pos-entry-heading">
-              <div>
-                <p className="eyebrow">Add products</p>
-                <label htmlFor="pos-sku-input">Scan or enter SKU</label>
-              </div>
-              <span className="keyboard-hint">
-                <kbd>F2</kbd> focus <span aria-hidden="true">·</span> <kbd>Enter</kbd> add
-              </span>
-            </div>
-            <form className="pos-sku-form" onSubmit={handleSubmit}>
-              <input
-                autoComplete="off"
-                autoFocus
-                disabled={savingSale}
-                id="pos-sku-input"
-                ref={inputRef}
-                value={skuInput}
-                onChange={(event) => setSkuInput(event.target.value)}
-                placeholder="Scan or enter product SKU"
-                aria-describedby="pos-sku-feedback"
-                aria-keyshortcuts="F2 Enter"
-              />
-              <button className="primary-button" type="submit" disabled={savingSale}>
-                Add item
-              </button>
-            </form>
-            <p
-              className={`pos-feedback${lookupIsError ? ' is-error' : ''}`}
-              id="pos-sku-feedback"
-              aria-live={lookupIsError ? 'assertive' : 'polite'}
-              role={lookupIsError ? 'alert' : 'status'}
-            >
-              {pendingLookups > 0
-                ? `Looking up ${pendingLookups} ${pendingLookups === 1 ? 'SKU' : 'SKUs'}…`
-                : lookupMessage || 'Scan an active product SKU to add it to this sale.'}
-            </p>
-          </div>
-
           <div className="pos-cart-card">
             <div className="pos-cart-heading">
               <div>
-                <p className="eyebrow">Current sale</p>
+                <p className="eyebrow">Current {transactionName}</p>
                 <h2>Items</h2>
               </div>
               {cart.length > 0 && (
                 <button
                   className="text-button danger-text"
+                  ref={clearCartButtonRef}
                   type="button"
-                  disabled={pendingLookups > 0 || savingSale}
+                  disabled={cartLocked || pendingLookups > 0}
                   onClick={handleClearCart}
                 >
-                  Clear sale
+                  Clear {mode === 'return' ? 'return' : 'sale'}
                 </button>
               )}
             </div>
+            {lineSelectionMode !== null && selectedCartLine && selectedCartLineIndex !== null && (
+              <div
+                className="cart-line-selection-help"
+                id="cart-line-selection-help"
+                role="status"
+                aria-live="polite"
+              >
+                <strong>
+                  {lineSelectionMode === 'remove' ? 'Remove item' : 'Edit item price'}:
+                </strong>{' '}
+                {selectedCartLine.name} ({selectedCartLine.sku}) · {selectedCartLineIndex + 1} of{' '}
+                {cart.length}
+                <span>
+                  Use ↑/↓ to choose · Enter to{' '}
+                  {lineSelectionMode === 'remove' ? 'remove' : 'edit price'} · Esc to cancel
+                </span>
+              </div>
+            )}
             {cart.length === 0 ? (
               <div className="pos-empty-cart">
                 <div className="empty-product-mark" aria-hidden="true">
                   ＋
                 </div>
                 <h3>No items yet</h3>
-                <p>Scan a product SKU to start a sale.</p>
+                <p>Scan a product SKU to start a {transactionName}.</p>
               </div>
             ) : (
               <div className="pos-cart-content">
                 <div className="pos-cart-scroll">
-                  <table className="pos-cart-table" aria-label="Items in current sale">
+                  <table
+                    className="pos-cart-table"
+                    aria-label={`Items in current ${transactionName}`}
+                  >
                     <colgroup>
                       <col className="cart-col-sku" />
                       <col className="cart-col-product" />
@@ -359,95 +861,214 @@ function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
                       </tr>
                     </thead>
                     <tbody>
-                      {displayLines.map((line) => (
-                        <tr key={line.productId}>
-                          <td className="product-sku">{line.sku}</td>
-                          <td className="product-name-cell">{line.name}</td>
-                          <td>{currencyFormatter.format(line.unitPriceCents / 100)}</td>
-                          <td>
-                            <div
-                              className="cart-quantity-controls"
-                              role="group"
-                              aria-label={`${line.name} quantity`}
-                            >
-                              <button
-                                className="quantity-button"
-                                type="button"
-                                aria-label={`Decrease ${line.name} quantity`}
-                                disabled={line.quantity <= 1 || savingSale}
-                                onClick={() =>
-                                  setCart((current) =>
-                                    changeCartQuantity(current, line.productId, -1)
-                                  )
-                                }
+                      {displayLines.map((line, lineIndex) => {
+                        const isKeyboardSelected =
+                          lineSelectionMode !== null && selectedCartLineIndex === lineIndex
+                        return (
+                          <tr
+                            key={line.productId}
+                            ref={(element) => {
+                              if (element) cartLineRowRefs.current.set(line.productId, element)
+                              else cartLineRowRefs.current.delete(line.productId)
+                            }}
+                            className={isKeyboardSelected ? 'is-keyboard-selected' : undefined}
+                            tabIndex={isKeyboardSelected ? 0 : undefined}
+                            aria-selected={
+                              lineSelectionMode !== null ? isKeyboardSelected : undefined
+                            }
+                            aria-describedby={
+                              isKeyboardSelected ? 'cart-line-selection-help' : undefined
+                            }
+                          >
+                            <td className="product-sku">{line.sku}</td>
+                            <td className="product-name-cell">
+                              {line.name}
+                              {mode === 'return' && (
+                                <label className="return-restock-checkbox">
+                                  <input
+                                    type="checkbox"
+                                    checked={'restock' in line && line.restock === true}
+                                    disabled={cartLocked}
+                                    onChange={(event) => {
+                                      const restock = event.currentTarget.checked
+                                      setCart((current) =>
+                                        current.map((entry) =>
+                                          entry.productId === line.productId
+                                            ? { ...entry, restock }
+                                            : entry
+                                        )
+                                      )
+                                    }}
+                                  />
+                                  Restock item
+                                </label>
+                              )}
+                            </td>
+                            <td>
+                              {mode === 'return' ? (
+                                <span className="cart-return-price">
+                                  {amount(
+                                    mode === 'return' && !('lineTotalCents' in line)
+                                      ? -line.unitPriceCents
+                                      : line.unitPriceCents
+                                  )}
+                                </span>
+                              ) : (
+                                <button
+                                  className="cart-price-button"
+                                  type="button"
+                                  disabled={cartLocked || !quote}
+                                  aria-label={`Change price for ${line.name}. Current price ${amount(line.unitPriceCents)}`}
+                                  onClick={() => setPriceDialogLine(line as QuoteItem)}
+                                >
+                                  {amount(line.unitPriceCents)}
+                                </button>
+                              )}
+                              {'priceOverrideReason' in line && line.priceOverrideReason && (
+                                <small className="price-adjusted-label">Adjusted</small>
+                              )}
+                            </td>
+                            <td>
+                              <div
+                                className="cart-quantity-controls"
+                                role="group"
+                                aria-label={`${line.name} quantity`}
                               >
-                                −
-                              </button>
-                              <span aria-live="polite">{line.quantity}</span>
+                                <button
+                                  className="quantity-button"
+                                  type="button"
+                                  aria-label={`Decrease ${line.name} quantity`}
+                                  disabled={line.quantity <= 1 || cartLocked}
+                                  onClick={() =>
+                                    setCart((current) =>
+                                      changeCartQuantity(current, line.productId, -1)
+                                    )
+                                  }
+                                >
+                                  −
+                                </button>
+                                <span aria-live="polite">{line.quantity}</span>
+                                <button
+                                  className="quantity-button"
+                                  type="button"
+                                  aria-label={`Increase ${line.name} quantity`}
+                                  disabled={cartLocked}
+                                  onClick={() =>
+                                    setCart((current) =>
+                                      changeCartQuantity(current, line.productId, 1)
+                                    )
+                                  }
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </td>
+                            <td className="pos-line-total">
+                              {currencyFormatter.format(
+                                ('lineTotalCents' in line && typeof line.lineTotalCents === 'number'
+                                  ? line.lineTotalCents
+                                  : (mode === 'return' ? -1 : 1) *
+                                    line.unitPriceCents *
+                                    line.quantity) / 100
+                              )}
+                            </td>
+                            <td>
                               <button
-                                className="quantity-button"
+                                className="text-button danger-text"
                                 type="button"
-                                aria-label={`Increase ${line.name} quantity`}
-                                disabled={savingSale}
-                                onClick={() =>
-                                  setCart((current) =>
-                                    changeCartQuantity(current, line.productId, 1)
-                                  )
-                                }
+                                aria-label={`Remove ${line.name}`}
+                                disabled={cartLocked}
+                                onClick={() => {
+                                  setCart((current) => removeCartProduct(current, line.productId))
+                                  window.requestAnimationFrame(() => inputRef.current?.focus())
+                                }}
                               >
-                                +
+                                Remove
                               </button>
-                            </div>
-                          </td>
-                          <td className="pos-line-total">
-                            {currencyFormatter.format(
-                              ('lineTotalCents' in line && typeof line.lineTotalCents === 'number'
-                                ? line.lineTotalCents
-                                : line.unitPriceCents * line.quantity) / 100
-                            )}
-                          </td>
-                          <td>
-                            <button
-                              className="text-button danger-text"
-                              type="button"
-                              aria-label={`Remove ${line.name}`}
-                              disabled={savingSale}
-                              onClick={() =>
-                                setCart((current) => removeCartProduct(current, line.productId))
-                              }
-                            >
-                              Remove
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
               </div>
             )}
           </div>
+
+          <div className="pos-entry-card">
+            <div className="pos-entry-heading">
+              <div>
+                <p className="eyebrow">
+                  {mode === 'return' ? 'Add returned items' : 'Add products'}
+                </p>
+                <label htmlFor="pos-sku-input">Scan or enter SKU</label>
+              </div>
+              <span className="keyboard-hint">
+                <kbd>F2</kbd> focus <span aria-hidden="true">·</span> <kbd>Enter</kbd> add
+              </span>
+            </div>
+            <form className="pos-sku-form" onSubmit={handleSubmit}>
+              <input
+                autoComplete="off"
+                autoFocus
+                disabled={cartLocked}
+                id="pos-sku-input"
+                ref={inputRef}
+                value={skuInput}
+                onChange={(event) => setSkuInput(event.target.value)}
+                placeholder="Scan or enter product SKU"
+                aria-describedby="pos-sku-feedback"
+                aria-keyshortcuts="F2 Enter"
+              />
+              <button className="primary-button" type="submit" disabled={cartLocked}>
+                Add item
+              </button>
+            </form>
+            <p
+              className={`pos-feedback${lookupIsError ? ' is-error' : ''}`}
+              id="pos-sku-feedback"
+              aria-live={lookupIsError ? 'assertive' : 'polite'}
+              role={lookupIsError ? 'alert' : 'status'}
+            >
+              {pendingLookups > 0
+                ? `Looking up ${pendingLookups} ${pendingLookups === 1 ? 'SKU' : 'SKUs'}…`
+                : lookupMessage ||
+                  (mode === 'return'
+                    ? 'Scan any catalog SKU, including inactive products.'
+                    : 'Scan an active product SKU to add it to this sale.')}
+            </p>
+          </div>
         </div>
 
         <aside className="pos-checkout-panel" aria-label="Checkout summary">
           <div className="checkout-panel-heading">
             <p className="eyebrow">Checkout</p>
-            <h2>Sale total</h2>
+            <h2>{mode === 'return' ? 'Return total' : 'Sale total'}</h2>
           </div>
           <p className="checkout-item-count" aria-live="polite">
-            {itemCount} {itemCount === 1 ? 'item' : 'items'} in this sale
+            {itemCount} {itemCount === 1 ? 'item' : 'items'} in this {transactionName}
           </p>
           <div className="checkout-summary" aria-live="polite" aria-busy={quoteLoading}>
             <div>
               <span>Subtotal</span>
               <strong>{quoteLoading ? 'Updating…' : amount(subtotal)}</strong>
             </div>
+            {!quoteLoading &&
+              quote?.taxBreakdown.map((entry) => (
+                <div key={`${entry.name}-${entry.rateBasisPoints}`}>
+                  <span>
+                    {entry.name} ({(entry.rateBasisPoints / 100).toFixed(2)}%)
+                  </span>
+                  <strong>{amount(entry.taxCents)}</strong>
+                </div>
+              ))}
             <div>
-              <span>Tax</span>
+              <span>Tax total</span>
               <strong>{quoteLoading ? 'Updating…' : amount(tax)}</strong>
             </div>
             <div className="checkout-grand-total">
-              <span>Total</span>
+              <span>{mode === 'return' ? 'Refund total' : 'Total'}</span>
               <strong>{quoteLoading ? 'Updating…' : amount(total)}</strong>
             </div>
           </div>
@@ -464,69 +1085,276 @@ function PosScreen({ cart, setCart }: PosScreenProps): React.JSX.Element {
               </button>
             </div>
           )}
-          <div className="checkout-payment-actions" aria-label="Choose payment method">
-            <button
-              className="secondary-button payment-button"
-              type="button"
-              disabled={checkoutDisabled}
-              aria-keyshortcuts="F4"
-              onClick={() => beginCheckout('cash')}
-            >
-              Cash <kbd>F4</kbd>
-            </button>
-            <button
-              className="primary-button payment-button"
-              type="button"
-              disabled={checkoutDisabled}
-              aria-keyshortcuts="F5"
-              onClick={() => beginCheckout('card')}
-            >
-              Card <kbd>F5</kbd>
-            </button>
+
+          {sessionNeedsResume ? (
+            <div className="payment-session-notice">
+              <p>
+                Payment in progress. The cart is locked until this payment is resumed or discarded.
+              </p>
+              <div className="payment-session-actions">
+                <button
+                  className="primary-button"
+                  type="button"
+                  disabled={!quote}
+                  onClick={resumePayment}
+                >
+                  Resume payment
+                </button>
+                <button
+                  className="text-button danger-text"
+                  type="button"
+                  onClick={discardPaymentSession}
+                >
+                  Discard staged payments
+                </button>
+              </div>
+            </div>
+          ) : paymentActive ? (
+            <div className="checkout-payment-session">
+              <div className="payment-session-totals" aria-live="polite">
+                <div className="payment-total-card">
+                  <span>{mode === 'return' ? 'Total payout' : 'Total tendered'}</span>
+                  <strong>{amount(totalTenderedCents(tenders))}</strong>
+                </div>
+                <div className="payment-total-card is-remaining">
+                  <span>{mode === 'return' ? 'Remaining to refund' : 'Remaining'}</span>
+                  <strong>{amount(tenderSummary?.remainingCents ?? total ?? 0)}</strong>
+                </div>
+                {mode === 'sale' && Boolean(tenderSummary?.changeCents) && (
+                  <div className="payment-total-change">
+                    <span>Change due</span>
+                    <strong>{amount(tenderSummary?.changeCents)}</strong>
+                  </div>
+                )}
+              </div>
+              {tenders.length > 0 && (
+                <ul className="staged-payment-list" aria-label="Payments entered">
+                  {tenders.map((tender, index) => {
+                    let remaining = quote ? Math.abs(quote.totalCents) : 0
+                    for (let previous = 0; previous < index; previous += 1) {
+                      const prior = tenders[previous]!
+                      remaining = Math.max(0, remaining - Math.min(prior.amountCents, remaining))
+                    }
+                    const invalidCard = tender.type !== 'cash' && tender.amountCents > remaining
+                    const applied = invalidCard ? 0 : Math.min(tender.amountCents, remaining)
+                    const change = tender.type === 'cash' ? tender.amountCents - applied : 0
+                    return (
+                      <li key={`${tender.type}-${index}`}>
+                        <span>
+                          <strong>{tenderLabel(tender.type)}</strong>
+                          <small>
+                            {mode === 'return'
+                              ? `${amount(tender.amountCents)} refunded`
+                              : `${amount(tender.amountCents)} tendered · ${amount(applied)} applied${change > 0 ? ` · ${amount(change)} change` : ''}`}
+                          </small>
+                        </span>
+                        <button
+                          className="text-button danger-text"
+                          type="button"
+                          aria-label={`Remove ${tenderLabel(tender.type)} payment ${index + 1}`}
+                          onClick={() => removeTender(index)}
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+              {tenderSummary && !tenderSummary.valid && (
+                <p className="product-banner-error" role="alert">
+                  {tenderSummary.error} Remove or replace a staged payment to continue.
+                </p>
+              )}
+              {checkoutError && (
+                <p className="product-banner-error" role="alert">
+                  {checkoutError}
+                </p>
+              )}
+              {tenderSummary?.remainingCents !== 0 && (
+                <div className="checkout-payment-actions">
+                  <button
+                    className="primary-button payment-button"
+                    ref={addPaymentButtonRef}
+                    type="button"
+                    disabled={
+                      checkoutDisabled ||
+                      tenderSummary?.valid === false ||
+                      tenderSummary?.remainingCents === 0
+                    }
+                    onClick={openTenderPicker}
+                  >
+                    Add payment
+                  </button>
+                  <p className="checkout-hint">
+                    {mode === 'return'
+                      ? 'Cash, Debit, or Credit refund · card refunds are recorded only'
+                      : 'Cash, Debit, or Credit'}
+                  </p>
+                </div>
+              )}
+              {tenderSummary?.valid && tenderSummary.remainingCents === 0 ? (
+                <button
+                  className="primary-button payment-complete-button"
+                  ref={completeTransactionButtonRef}
+                  type="button"
+                  disabled={savingSale || !quote}
+                  onClick={() => setConfirmTransaction(true)}
+                >
+                  {mode === 'return' ? 'Complete Return' : 'Complete Sale'}
+                </button>
+              ) : null}
+              <button
+                className="text-button danger-text"
+                type="button"
+                onClick={discardPaymentSession}
+              >
+                {tenders.length > 0 ? 'Discard payment session' : 'Return to cart'}
+              </button>
+            </div>
+          ) : zeroTotal ? (
+            <div className="checkout-payment-actions">
+              <p className="zero-total-note">
+                {mode === 'return'
+                  ? 'No refund payout is due for this return.'
+                  : 'No payment is due for this sale.'}
+              </p>
+              <button
+                className="primary-button payment-complete-button"
+                ref={completeTransactionButtonRef}
+                type="button"
+                disabled={checkoutDisabled}
+                onClick={() => {
+                  setPaymentActive(true)
+                  setCheckoutSession({ tenders: [] })
+                  setConfirmTransaction(true)
+                }}
+              >
+                {mode === 'return' ? 'Complete $0 Return' : 'Complete $0 Sale'}
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="checkout-payment-actions" aria-label="Add payment">
+                <button
+                  className="primary-button payment-button"
+                  ref={addPaymentButtonRef}
+                  type="button"
+                  disabled={checkoutDisabled}
+                  onClick={openTenderPicker}
+                >
+                  Add payment
+                </button>
+              </div>
+              <p className="checkout-hint">
+                {mode === 'return'
+                  ? 'Cash, Debit, or Credit refund · card refunds are recorded only'
+                  : 'Cash, Debit, or Credit'}
+              </p>
+            </>
+          )}
+          <div className="register-shortcut-legend" aria-label="Register keyboard shortcuts">
+            <p className="eyebrow">Keyboard shortcuts</p>
+            <ul>
+              <li>
+                <kbd>F2</kbd>
+                <span>Focus SKU</span>
+              </li>
+              <li>
+                <kbd>R</kbd>
+                <span>Toggle Sale / Return</span>
+              </li>
+              <li>
+                <kbd>F3</kbd>
+                <span>Products</span>
+              </li>
+              <li>
+                <kbd>F4</kbd>
+                <span>Clear cart</span>
+              </li>
+              <li>
+                <kbd>F5</kbd>
+                <span>Remove item</span>
+              </li>
+              <li>
+                <kbd>F6</kbd>
+                <span>Edit item price (Sale mode)</span>
+              </li>
+              <li>
+                <kbd>F9</kbd>
+                <span>Add payment</span>
+              </li>
+            </ul>
+            <p className="shortcut-legend-help">
+              F5/F6: use ↑/↓ to select an item, Enter to act, Esc to cancel · Tab to other controls
+            </p>
           </div>
-          <p className="checkout-hint">
-            Confirm before saving. Press <kbd>Esc</kbd> to cancel.
-          </p>
         </aside>
       </div>
 
-      {pendingPayment && quote && (
-        <CheckoutConfirmationDialog
-          paymentMethod={pendingPayment}
-          totalCents={quote.totalCents}
-          error={checkoutError}
-          saving={savingSale}
-          onCancel={() => {
-            if (!savingSale) {
-              setPendingPayment(null)
-              setCheckoutError('')
-            }
-          }}
-          onConfirm={() => void completeSale()}
+      {priceDialogLine && (
+        <PriceOverrideDialog
+          line={priceDialogLine}
+          onCancel={() => setPriceDialogLine(null)}
+          onApply={applyPriceOverride}
         />
+      )}
+      {paymentMethodPickerOpen && quote && (
+        <PaymentMethodPickerDialog
+          isReturn={mode === 'return'}
+          onCancel={cancelTenderPicker}
+          onSelect={(type) => {
+            setPaymentMethodPickerOpen(false)
+            beginTender(type)
+          }}
+        />
+      )}
+      {tenderDialogType && quote && (
+        <TenderEntryDialog
+          isReturn={mode === 'return'}
+          initialType={tenderDialogType}
+          remainingCents={tenderSummary?.remainingCents ?? paymentTargetCents}
+          stagedTenders={tenders}
+          totalCents={paymentTargetCents}
+          onCancel={cancelTenderEntry}
+          onAdd={stageTender}
+        />
+      )}
+      {confirmTransaction && quote && tenderSummary && (
+        <CompleteSaleDialog
+          isReturn={mode === 'return'}
+          totalCents={quote.totalCents}
+          tenderedCents={totalTenderedCents(tenders)}
+          changeCents={tenderSummary.changeCents}
+          saving={savingSale}
+          error={checkoutError}
+          onCancel={cancelTransactionConfirmation}
+          onConfirm={() => void completeTransaction()}
+        />
+      )}
+
+      {receiptDialogSale && (
+        <ReceiptDialog sale={receiptDialogSale} onClose={() => setReceiptDialogSale(null)} />
       )}
     </section>
   )
 }
 
-interface CheckoutConfirmationDialogProps {
-  paymentMethod: PaymentMethod
-  totalCents: number
-  error: string
-  saving: boolean
+interface PriceOverrideDialogProps {
+  line: QuoteItem
   onCancel: () => void
-  onConfirm: () => void
+  onApply: (priceCents: number, reason: string) => void
 }
 
-function CheckoutConfirmationDialog({
-  paymentMethod,
-  totalCents,
-  error,
-  saving,
+function PriceOverrideDialog({
+  line,
   onCancel,
-  onConfirm
-}: CheckoutConfirmationDialogProps): React.JSX.Element {
+  onApply
+}: PriceOverrideDialogProps): React.JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null)
+  const [price, setPrice] = useState(centsInput(line.unitPriceCents))
+  const [reason, setReason] = useState('')
+  const [error, setError] = useState('')
 
   useEffect(() => {
     const dialog = dialogRef.current
@@ -536,13 +1364,351 @@ function CheckoutConfirmationDialog({
     }
   }, [])
 
-  const methodLabel = paymentMethod === 'cash' ? 'Cash' : 'Card'
+  function submit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault()
+    const cents = parseCadCents(price)
+    if (cents === null) {
+      setError('Enter a non-negative CAD price with up to two decimal places.')
+      return
+    }
+    if (!reason.trim()) {
+      setError('Enter a reason for changing this item’s price.')
+      return
+    }
+    onApply(cents, reason.trim())
+  }
 
   return (
     <dialog
       className="product-dialog checkout-dialog"
       ref={dialogRef}
-      aria-labelledby="checkout-dialog-title"
+      aria-labelledby="price-override-title"
+      onCancel={(event) => {
+        event.preventDefault()
+        onCancel()
+      }}
+    >
+      <div className="dialog-heading">
+        <div>
+          <p className="eyebrow">Transaction price</p>
+          <h2 id="price-override-title">Change price for {line.name}</h2>
+        </div>
+        <button
+          className="dialog-close-button"
+          type="button"
+          aria-label="Cancel"
+          onClick={onCancel}
+        >
+          ×
+        </button>
+      </div>
+      <form onSubmit={submit}>
+        <div className="checkout-confirmation price-override-fields">
+          <p>Catalog price: {currencyFormatter.format(line.catalogUnitPriceCents / 100)}</p>
+          <label>
+            <span>New price (CAD)</span>
+            <input
+              autoFocus
+              inputMode="decimal"
+              value={price}
+              onChange={(event) => setPrice(event.target.value)}
+              aria-label="New price in CAD"
+            />
+          </label>
+          <label>
+            <span>Reason for change</span>
+            <textarea
+              rows={3}
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              aria-label="Reason for price change"
+            />
+          </label>
+          {error && (
+            <p className="product-banner-error" role="alert">
+              {error}
+            </p>
+          )}
+          <p className="price-override-note">This change applies only to this sale.</p>
+        </div>
+        <div className="dialog-actions checkout-dialog-actions">
+          <button className="secondary-button" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="primary-button" type="submit">
+            Confirm price change
+          </button>
+        </div>
+      </form>
+    </dialog>
+  )
+}
+
+interface TenderEntryDialogProps {
+  isReturn: boolean
+  initialType: TenderType
+  remainingCents: number
+  totalCents: number
+  stagedTenders: TenderInput[]
+  onCancel: () => void
+  onAdd: (tender: TenderInput) => string | null
+}
+
+interface PaymentMethodPickerDialogProps {
+  isReturn: boolean
+  onCancel: () => void
+  onSelect: (type: TenderType) => void
+}
+
+function PaymentMethodPickerDialog({
+  isReturn,
+  onCancel,
+  onSelect
+}: PaymentMethodPickerDialogProps): React.JSX.Element {
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const methodRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const [focusedMethodIndex, setFocusedMethodIndex] = useState(0)
+  const methods: TenderType[] = ['cash', 'debit', 'credit']
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (dialog && !dialog.open) {
+      dialog.showModal()
+      methodRefs.current[0]?.focus()
+    }
+    return () => {
+      if (dialog?.open) dialog.close()
+    }
+  }, [])
+
+  function handlePickerKeyDown(event: React.KeyboardEvent<HTMLDialogElement>): void {
+    const nextIndex = nextPaymentMethodIndex(focusedMethodIndex, event.key, methods.length)
+    if (nextIndex === null) return
+    event.preventDefault()
+    setFocusedMethodIndex(nextIndex)
+    methodRefs.current[nextIndex]?.focus()
+  }
+
+  return (
+    <dialog
+      className="product-dialog checkout-dialog"
+      ref={dialogRef}
+      aria-labelledby="payment-method-title"
+      aria-describedby="payment-method-keyboard-hint"
+      onKeyDown={handlePickerKeyDown}
+      onCancel={(event) => {
+        event.preventDefault()
+        onCancel()
+      }}
+    >
+      <div className="dialog-heading">
+        <div>
+          <p className="eyebrow">{isReturn ? 'Refund payout' : 'Payment'}</p>
+          <h2 id="payment-method-title">Choose a {isReturn ? 'refund' : 'payment'} method</h2>
+        </div>
+        <button
+          className="dialog-close-button"
+          type="button"
+          aria-label="Close payment method selection"
+          onClick={onCancel}
+        >
+          ×
+        </button>
+      </div>
+      <div className="checkout-confirmation payment-method-picker-content">
+        <div className="payment-method-picker-grid" role="group" aria-label="Payment methods">
+          {methods.map((type, index) => (
+            <button
+              className={type === 'cash' ? 'primary-button' : 'secondary-button'}
+              key={type}
+              ref={(element) => {
+                methodRefs.current[index] = element
+              }}
+              tabIndex={index === focusedMethodIndex ? 0 : -1}
+              type="button"
+              onFocus={() => setFocusedMethodIndex(index)}
+              onClick={() => onSelect(type)}
+            >
+              {tenderLabel(type)}
+            </button>
+          ))}
+        </div>
+        <p className="payment-method-picker-hint" id="payment-method-keyboard-hint">
+          Use ← and → to choose a method; ↑ and ↓ move between controls. Press Enter to continue.
+        </p>
+      </div>
+      <div className="dialog-actions checkout-dialog-actions">
+        <button className="secondary-button" type="button" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </dialog>
+  )
+}
+
+function TenderEntryDialog({
+  isReturn,
+  initialType,
+  remainingCents,
+  totalCents,
+  stagedTenders,
+  onCancel,
+  onAdd
+}: TenderEntryDialogProps): React.JSX.Element {
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const amountInputRef = useRef<HTMLInputElement>(null)
+  const type = initialType
+  const [amount, setAmount] = useState(initialType === 'cash' ? '' : centsInput(remainingCents))
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (dialog && !dialog.open) {
+      dialog.showModal()
+      amountInputRef.current?.focus()
+    }
+    return () => {
+      if (dialog?.open) dialog.close()
+    }
+  }, [])
+
+  function submit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault()
+    const amountCents = parseCadCents(amount)
+    if (amountCents === null || amountCents <= 0) {
+      setError('Enter a payment amount above $0.00 with up to two decimal places.')
+      return
+    }
+    const tender = { type, amountCents }
+    const preview = isReturn
+      ? allocateReturnPayouts(totalCents, [...stagedTenders, tender])
+      : allocateTenders(totalCents, [...stagedTenders, tender])
+    if (!preview.valid) {
+      setError(preview.error)
+      return
+    }
+    const result = onAdd(tender)
+    if (result) setError(result)
+  }
+
+  return (
+    <dialog
+      className="product-dialog checkout-dialog"
+      ref={dialogRef}
+      aria-labelledby="tender-dialog-title"
+      onCancel={(event) => {
+        event.preventDefault()
+        onCancel()
+      }}
+    >
+      <div className="dialog-heading">
+        <div>
+          <p className="eyebrow">
+            {isReturn ? 'Remaining refund' : 'Remaining balance'}{' '}
+            {currencyFormatter.format(remainingCents / 100)}
+          </p>
+          <h2 id="tender-dialog-title">
+            {isReturn ? `Record ${tenderLabel(type)} refund` : `Add ${tenderLabel(type)} payment`}
+          </h2>
+        </div>
+        <button
+          className="dialog-close-button"
+          type="button"
+          aria-label="Cancel"
+          onClick={onCancel}
+        >
+          ×
+        </button>
+      </div>
+      <form onSubmit={submit}>
+        <div className="checkout-confirmation price-override-fields">
+          <label>
+            <span>
+              {isReturn
+                ? 'Amount paid out (CAD)'
+                : type === 'cash'
+                  ? 'Amount received (CAD)'
+                  : 'Payment amount (CAD)'}
+            </span>
+            <input
+              ref={amountInputRef}
+              inputMode="decimal"
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+              aria-label={
+                isReturn
+                  ? 'Refund amount paid out in CAD'
+                  : type === 'cash'
+                    ? 'Cash amount received in CAD'
+                    : 'Payment amount in CAD'
+              }
+            />
+          </label>
+          {type === 'cash' && !isReturn && (
+            <p>Cash over the remaining balance will be recorded as change due.</p>
+          )}
+          {isReturn && type !== 'cash' && (
+            <p>Record the card refund here, then process it separately on the payment terminal.</p>
+          )}
+          {error && (
+            <p className="product-banner-error" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
+        <div className="dialog-actions checkout-dialog-actions">
+          <button className="secondary-button" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="primary-button" type="submit">
+            {isReturn ? `Record ${tenderLabel(type)} refund` : `Add ${tenderLabel(type)} payment`}
+          </button>
+        </div>
+      </form>
+    </dialog>
+  )
+}
+
+interface CompleteSaleDialogProps {
+  isReturn: boolean
+  totalCents: number
+  tenderedCents: number
+  changeCents: number
+  saving: boolean
+  error: string
+  onCancel: () => void
+  onConfirm: () => void
+}
+
+function CompleteSaleDialog({
+  isReturn,
+  totalCents,
+  tenderedCents,
+  changeCents,
+  saving,
+  error,
+  onCancel,
+  onConfirm
+}: CompleteSaleDialogProps): React.JSX.Element {
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const confirmButtonRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (dialog && !dialog.open) {
+      dialog.showModal()
+      confirmButtonRef.current?.focus()
+    }
+    return () => {
+      if (dialog?.open) dialog.close()
+    }
+  }, [])
+
+  return (
+    <dialog
+      className="product-dialog checkout-dialog"
+      ref={dialogRef}
+      aria-labelledby="complete-sale-title"
       onCancel={(event) => {
         event.preventDefault()
         if (!saving) onCancel()
@@ -550,13 +1716,15 @@ function CheckoutConfirmationDialog({
     >
       <div className="dialog-heading">
         <div>
-          <p className="eyebrow">Payment method: {methodLabel}</p>
-          <h2 id="checkout-dialog-title">Complete {methodLabel} Sale?</h2>
+          <p className="eyebrow">{isReturn ? 'Refund complete' : 'Payment complete'}</p>
+          <h2 id="complete-sale-title">
+            {isReturn ? 'Complete this return?' : 'Complete this sale?'}
+          </h2>
         </div>
         <button
           className="dialog-close-button"
           type="button"
-          aria-label="Close"
+          aria-label="Cancel"
           disabled={saving}
           onClick={onCancel}
         >
@@ -564,8 +1732,27 @@ function CheckoutConfirmationDialog({
         </button>
       </div>
       <div className="checkout-confirmation">
-        <span>Total</span>
-        <strong>{currencyFormatter.format(totalCents / 100)}</strong>
+        <div className="sale-confirmation-lines">
+          <div>
+            <span>{isReturn ? 'Return total' : 'Total'}</span>
+            <strong>{currencyFormatter.format(totalCents / 100)}</strong>
+          </div>
+          <div>
+            <span>{isReturn ? 'Total payout' : 'Total tendered'}</span>
+            <strong>{currencyFormatter.format(tenderedCents / 100)}</strong>
+          </div>
+        </div>
+        {!isReturn && (
+          <div className="sale-confirmation-change" aria-live="polite">
+            <span>Change due</span>
+            <strong>{currencyFormatter.format(changeCents / 100)}</strong>
+          </div>
+        )}
+        {isReturn && (
+          <p className="settings-help">
+            Card refunds are recorded here and must be processed separately on the terminal.
+          </p>
+        )}
         {error && (
           <p className="product-banner-error" role="alert">
             {error}
@@ -573,11 +1760,20 @@ function CheckoutConfirmationDialog({
         )}
       </div>
       <div className="dialog-actions checkout-dialog-actions">
-        <button className="secondary-button" type="button" disabled={saving} onClick={onCancel}>
-          Cancel
-        </button>
-        <button className="primary-button" type="button" disabled={saving} onClick={onConfirm}>
-          {saving ? 'Saving sale…' : 'Complete Sale'}
+        <button
+          className="primary-button"
+          ref={confirmButtonRef}
+          type="button"
+          disabled={saving}
+          onClick={onConfirm}
+        >
+          {saving
+            ? isReturn
+              ? 'Saving return…'
+              : 'Saving sale…'
+            : isReturn
+              ? 'Complete Return'
+              : 'Complete Sale'}
         </button>
       </div>
     </dialog>

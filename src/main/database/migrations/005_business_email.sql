@@ -1,0 +1,1 @@
+ALTER TABLE settings ADD COLUMN business_email TEXT NOT NULL DEFAULT '';

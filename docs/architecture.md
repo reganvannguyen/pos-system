@@ -11,6 +11,7 @@ Windows Desktop App
        |      |
        |      +-- SQLite
        |      +-- Windows printing
+       |      +-- Windows mail and messaging handoff
        |
        +-- Preload / IPC boundary
        |
@@ -26,6 +27,7 @@ Responsible for the user interface:
 - POS screen.
 - Product management.
 - Sales history.
+- Standalone returns with exact refund payouts and optional per-line restocking.
 - Settings.
 - Receipt preview.
 
@@ -40,6 +42,7 @@ Responsible for privileged desktop functionality:
 - Managing application windows.
 - Reading installed printers.
 - Printing receipts.
+- Creating receipt PDFs and opening email/text drafts in system applications.
 - Locating the application's writable data directory.
 
 ### Preload / IPC Layer
@@ -52,6 +55,7 @@ Example responsibilities:
 - `products.list()`
 - `products.create(...)`
 - `sales.complete(...)`
+- `sales.quoteReturn(...)` and `sales.completeReturn(...)`
 - `sales.list()`
 - `sales.get(id)`
 - `printers.list()`
@@ -85,23 +89,27 @@ Validate cart
         v
 BEGIN TRANSACTION
         |
-        +-- Insert sale
-        +-- Insert sale_items
+        +-- Insert transaction and item snapshots
         +-- Update stock (if enabled)
         |
         v
-COMMIT
+COMMIT and clear the cart
         |
         v
-Generate / print receipt
+Show receipt choices after commit
         |
-        v
-Clear cart
+        +-- Print / open email draft / open text draft
 ```
 
 If a database write fails before commit, the sale must roll back.
 
-Receipt printing happens after the sale is safely stored. A printer failure must not erase or reverse a valid completed sale.
+Return completion follows the same atomic boundary. It stores positive database magnitudes with a
+`return` transaction type, records exact Cash/Card payouts, and increments only selected tracked
+stock. The API and renderer expose signed negative return amounts. A failed return write leaves its
+cart and staged payouts available.
+
+Receipt actions happen after the sale is safely stored. Printer, PDF, or external-app failures must
+not erase or reverse a valid completed sale.
 
 ## 4. Security Boundary
 

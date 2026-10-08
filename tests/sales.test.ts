@@ -7,32 +7,71 @@ import Database from 'better-sqlite3'
 import { createProductRepository } from '../src/main/database/repositories/products'
 import { createSalesRepository } from '../src/main/database/repositories/sales'
 import { createSettingsRepository } from '../src/main/database/repositories/settings'
-import { createSalesService, toSalesResult } from '../src/main/sales-service'
+import { createTaxRepository } from '../src/main/database/repositories/taxes'
+import { backfillTransactionNumbers } from '../src/main/database/transaction-numbers'
+import { createSalesExportService, serializeSalesCsv } from '../src/main/sales-export-service'
+import { resolveSalesPeriod } from '../src/main/sales-period'
+import { createSalesService, toSalesResult, toSalesResultAsync } from '../src/main/sales-service'
 
-const schema = readFileSync(
-  join(process.cwd(), 'src/main/database/migrations/001_initial_schema.sql'),
-  'utf8'
-)
+const schemaBeforeReturns =
+  readFileSync(join(process.cwd(), 'src/main/database/migrations/001_initial_schema.sql'), 'utf8') +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/002_multiple_tax_rates.sql'),
+    'utf8'
+  ) +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/003_tenders_and_price_overrides.sql'),
+    'utf8'
+  ) +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/004_credit_tender_type.sql'),
+    'utf8'
+  ) +
+  readFileSync(join(process.cwd(), 'src/main/database/migrations/005_business_email.sql'), 'utf8') +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/006_receipt_business_details.sql'),
+    'utf8'
+  )
+const schema =
+  schemaBeforeReturns +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/007_standalone_returns.sql'),
+    'utf8'
+  ) +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/008_transaction_numbers.sql'),
+    'utf8'
+  )
 
-function withSales(
-  run: (context: {
-    database: Database.Database
-    products: ReturnType<typeof createProductRepository>
-    settings: ReturnType<typeof createSettingsRepository>
-    service: ReturnType<typeof createSalesService>
-  }) => void
-): void {
+interface SalesTestContext {
+  database: Database.Database
+  products: ReturnType<typeof createProductRepository>
+  settings: ReturnType<typeof createSettingsRepository>
+  taxes: ReturnType<typeof createTaxRepository>
+  service: ReturnType<typeof createSalesService>
+}
+
+function withSales<T>(run: (context: SalesTestContext) => T): T {
   const database = new Database(':memory:')
   database.pragma('foreign_keys = ON')
   database.exec(schema)
   const products = createProductRepository(database)
   const settings = createSettingsRepository(database)
-  const service = createSalesService(createSalesRepository(database), settings)
+  const taxes = createTaxRepository(database)
+  const service = createSalesService(createSalesRepository(database, taxes))
+
+  const close = (): void => {
+    database.close()
+  }
 
   try {
-    run({ database, products, settings, service })
-  } finally {
-    database.close()
+    const result = run({ database, products, settings, taxes, service })
+    if (result instanceof Promise) return result.finally(close) as T
+    close()
+    return result
+  } catch (error) {
+    close()
+    throw error
   }
 }
 
@@ -50,6 +89,36 @@ function createProduct(
   return product.id
 }
 
+function localTimestamp(year: number, month: number, day: number, hour = 12, minute = 0): string {
+  const date = new Date(0)
+  date.setFullYear(year, month - 1, day)
+  date.setHours(hour, minute, 0, 0)
+  return date.toISOString().slice(0, 19).replace('T', ' ')
+}
+
+function setSaleTimestamp(database: Database.Database, saleId: number, timestamp: string): void {
+  database.prepare('UPDATE sales SET created_at = ? WHERE id = ?').run(timestamp, saleId)
+}
+
+function completeWithPayment(
+  service: ReturnType<typeof createSalesService>,
+  items: Array<{
+    productId: number
+    quantity: number
+    priceOverride?: { unitPriceCents: number; reason: string }
+  }>,
+  method: 'cash' | 'card' = 'cash'
+) {
+  const totalCents = service.quote(items).totalCents
+  return service.completeCheckout({
+    items,
+    tenders:
+      totalCents === 0
+        ? []
+        : [{ type: method === 'cash' ? 'cash' : 'credit', amountCents: totalCents }]
+  })
+}
+
 function assertSaleError<T>(
   result: ReturnType<typeof toSalesResult<T>>,
   code: string
@@ -58,8 +127,314 @@ function assertSaleError<T>(
   if (!result.ok) assert.equal(result.error.code, code)
 }
 
-test('quotes current prices and rounds tax once across the sale subtotal', () => {
+test('forward return migration keeps existing records as sales and defaults restock fields off', () => {
+  const database = new Database(':memory:')
+  database.pragma('foreign_keys = ON')
+  database.exec(schemaBeforeReturns)
+  const productId = Number(
+    database
+      .prepare('INSERT INTO products (sku, name, price_cents) VALUES (?, ?, ?)')
+      .run('OLD-SALE', 'Old sale item', 500).lastInsertRowid
+  )
+  const saleId = Number(
+    database
+      .prepare(
+        `INSERT INTO sales (subtotal_cents, tax_cents, total_cents, payment_method)
+         VALUES (500, 0, 500, 'cash')`
+      )
+      .run().lastInsertRowid
+  )
+  database
+    .prepare(
+      `INSERT INTO sale_items (sale_id, product_id, sku, product_name, unit_price_cents, quantity, line_total_cents)
+       VALUES (?, ?, 'OLD-SALE', 'Old sale item', 500, 1, 500)`
+    )
+    .run(saleId, productId)
+
+  database.exec(
+    readFileSync(
+      join(process.cwd(), 'src/main/database/migrations/007_standalone_returns.sql'),
+      'utf8'
+    )
+  )
+  const migratedSale = database
+    .prepare('SELECT transaction_type, return_reason FROM sales WHERE id = ?')
+    .get(saleId) as { transaction_type: string; return_reason: string | null }
+  const migratedItem = database
+    .prepare('SELECT restock_requested, restocked_quantity FROM sale_items WHERE sale_id = ?')
+    .get(saleId) as { restock_requested: number; restocked_quantity: number }
+
+  assert.deepEqual(migratedSale, { transaction_type: 'sale', return_reason: null })
+  assert.deepEqual(migratedItem, { restock_requested: 0, restocked_quantity: 0 })
+  database.close()
+})
+
+test('return quotes use current catalog prices and tax, accept inactive products, and sign amounts negative', () => {
+  withSales(({ products, taxes, service }) => {
+    const productId = createProduct(products, {
+      sku: 'RETURN-QUOTE',
+      name: 'Return item',
+      priceCents: 1000,
+      stockQuantity: 2
+    })
+    products.setActive(productId, false)
+    taxes.save([{ name: 'GST', rateBasisPoints: 500 }])
+
+    const quote = service.quoteReturn({
+      reason: '  Customer changed mind  ',
+      items: [{ productId, quantity: 2, restock: false }]
+    })
+
+    assert.equal(quote.returnReason, 'Customer changed mind')
+    assert.equal(quote.subtotalCents, -2000)
+    assert.equal(quote.taxCents, -100)
+    assert.equal(quote.totalCents, -2100)
+    assert.deepEqual(
+      quote.items.map(({ unitPriceCents, quantity, lineTotalCents, restock }) => [
+        unitPriceCents,
+        quantity,
+        lineTotalCents,
+        restock
+      ]),
+      [[-1000, 2, -2000, false]]
+    )
+    assert.equal(quote.taxBreakdown[0]?.taxCents, -100)
+  })
+})
+
+test('returns require a reason and reject transaction price overrides', () => {
+  withSales(({ products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'RETURN-VALIDATION',
+      name: 'Return validation item',
+      priceCents: 100
+    })
+    assertSaleError(
+      toSalesResult(() =>
+        service.quoteReturn({ reason: '  ', items: [{ productId, quantity: 1, restock: false }] })
+      ),
+      'invalid-input'
+    )
+    assertSaleError(
+      toSalesResult(() =>
+        service.quoteReturn({
+          reason: 'Price exception',
+          items: [
+            {
+              productId,
+              quantity: 1,
+              restock: false,
+              priceOverride: { unitPriceCents: 25, reason: 'special' }
+            }
+          ]
+        })
+      ),
+      'invalid-input'
+    )
+  })
+})
+
+test('allows a zero-total return with an item and reason but without payout', () => {
   withSales(({ database, products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'ZERO-RETURN',
+      name: 'Free return item',
+      priceCents: 0,
+      stockQuantity: 1
+    })
+    const result = service.completeReturn({
+      reason: 'Free item returned',
+      items: [{ productId, quantity: 1, restock: true }],
+      tenders: []
+    })
+
+    assert.equal(result.return.totalCents, 0)
+    assert.deepEqual(result.return.payments, [])
+    assert.equal(result.return.items[0]?.restockedQuantity, 1)
+    assert.equal(
+      (
+        database.prepare('SELECT stock_quantity FROM products WHERE id = ?').get(productId) as {
+          stock_quantity: number
+        }
+      ).stock_quantity,
+      2
+    )
+  })
+})
+
+test('return payouts must match exactly and only selected tracked products are restocked', () => {
+  withSales(({ database, products, taxes, service }) => {
+    const trackedId = createProduct(products, {
+      sku: 'RETURN-TRACKED',
+      name: 'Tracked return item',
+      priceCents: 500,
+      stockQuantity: 2
+    })
+    const untrackedId = createProduct(products, {
+      sku: 'RETURN-UNTRACKED',
+      name: 'Untracked return item',
+      priceCents: 250,
+      stockQuantity: null
+    })
+    products.setActive(trackedId, false)
+    taxes.save([{ name: 'GST', rateBasisPoints: 500 }])
+
+    const result = service.completeReturn({
+      reason: 'Packaging was damaged',
+      items: [
+        { productId: trackedId, quantity: 2, restock: true },
+        { productId: untrackedId, quantity: 1, restock: true }
+      ],
+      tenders: [
+        { type: 'cash', amountCents: 500 },
+        { type: 'credit', amountCents: 813 }
+      ]
+    })
+    const returned = service.getById(result.return.id)
+
+    assert.equal(result.return.transactionType, 'return')
+    assert.equal(result.return.returnReason, 'Packaging was damaged')
+    assert.equal(result.return.subtotalCents, -1250)
+    assert.equal(result.return.taxCents, -63)
+    assert.equal(result.return.totalCents, -1313)
+    assert.equal(result.return.paymentMethod, 'split')
+    assert.deepEqual(
+      result.return.payments.map((payment) => [payment.type, payment.amountAppliedCents]),
+      [
+        ['cash', -500],
+        ['credit', -813]
+      ]
+    )
+    assert.deepEqual(
+      returned.items.map((item) => [
+        item.unitPriceCents,
+        item.quantity,
+        item.lineTotalCents,
+        item.restockRequested,
+        item.restockedQuantity
+      ]),
+      [
+        [-500, 2, -1000, true, 2],
+        [-250, 1, -250, true, 0]
+      ]
+    )
+    assert.equal(
+      (
+        database.prepare('SELECT stock_quantity FROM products WHERE id = ?').get(trackedId) as {
+          stock_quantity: number
+        }
+      ).stock_quantity,
+      4
+    )
+    assert.equal(
+      (
+        database.prepare('SELECT stock_quantity FROM products WHERE id = ?').get(untrackedId) as {
+          stock_quantity: number | null
+        }
+      ).stock_quantity,
+      null
+    )
+    assert.equal(
+      (
+        database.prepare('SELECT price_cents FROM products WHERE id = ?').get(trackedId) as {
+          price_cents: number
+        }
+      ).price_cents,
+      500
+    )
+  })
+})
+
+test('return payout shortage, excess, and failed writes do not leave a return or stock update', () => {
+  withSales(({ database, products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'RETURN-ROLLBACK',
+      name: 'Return rollback item',
+      priceCents: 1000,
+      stockQuantity: 3
+    })
+    const request = {
+      reason: 'Refund requested',
+      items: [{ productId, quantity: 1, restock: true }]
+    }
+    assertSaleError(
+      toSalesResult(() =>
+        service.completeReturn({ ...request, tenders: [{ type: 'cash', amountCents: 900 }] })
+      ),
+      'insufficient-payment'
+    )
+    assertSaleError(
+      toSalesResult(() =>
+        service.completeReturn({ ...request, tenders: [{ type: 'cash', amountCents: 1001 }] })
+      ),
+      'invalid-input'
+    )
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM sales').get()?.count, 0)
+
+    database.exec(`CREATE TRIGGER fail_return_payment BEFORE INSERT ON sale_payments
+      BEGIN SELECT RAISE(ABORT, 'forced refund payout write failure'); END;`)
+    assert.throws(
+      () =>
+        service.completeReturn({
+          ...request,
+          tenders: [{ type: 'cash', amountCents: 1000 }]
+        }),
+      /forced refund payout write failure/
+    )
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM sales').get()?.count, 0)
+    assert.equal(
+      (
+        database.prepare('SELECT stock_quantity FROM products WHERE id = ?').get(productId) as {
+          stock_quantity: number
+        }
+      ).stock_quantity,
+      3
+    )
+  })
+})
+
+test('sales reports and CSV show negative returns, reasons, and received/refunded/net tenders', () => {
+  withSales(({ database, products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'RETURN-REPORT',
+      name: 'Return report item',
+      priceCents: 1000,
+      stockQuantity: 4
+    })
+    const completedSale = service.completeCheckout({
+      items: [{ productId, quantity: 1 }],
+      tenders: [{ type: 'cash', amountCents: 1000 }]
+    })
+    const returned = service.completeReturn({
+      reason: 'Customer changed mind, unopened',
+      items: [{ productId, quantity: 1, restock: false }],
+      tenders: [{ type: 'credit', amountCents: 1000 }]
+    })
+    setSaleTimestamp(database, completedSale.sale.id, localTimestamp(2025, 4, 8))
+    setSaleTimestamp(database, returned.return.id, localTimestamp(2025, 4, 8, 13))
+
+    const report = service.report({ type: 'day', date: '2025-04-08' })
+    assert.equal(report.totals.transactionCount, 2)
+    assert.equal(report.totals.saleCount, 1)
+    assert.equal(report.totals.returnCount, 1)
+    assert.equal(report.totals.grossSalesTotalCents, 1000)
+    assert.equal(report.totals.returnsTotalCents, -1000)
+    assert.equal(report.totals.netTotalCents, 0)
+    assert.equal(report.totals.cashReceivedCents, 1000)
+    assert.equal(report.totals.cardRefundedCents, 1000)
+    assert.equal(report.totals.cardNetCents, -1000)
+    assert.equal(report.sales[0]?.transactionType, 'return')
+    assert.equal(report.sales[0]?.totalCents, -1000)
+    const csv = serializeSalesCsv(report.sales)
+    assert.equal(
+      csv.split('\r\n')[1],
+      `return,Return #${returned.return.transactionNumber},2025-04-08 13:00:00,card,Credit: refunded -10.00,"Customer changed mind, unopened",1,-10.00,0.00,-10.00`
+    )
+  })
+})
+
+test('quotes current prices and rounds tax once across the sale subtotal', () => {
+  withSales(({ products, taxes, service }) => {
     const twoCentProductId = createProduct(products, {
       sku: 'TWO-CENTS',
       name: 'Two cents',
@@ -70,7 +445,7 @@ test('quotes current prices and rounds tax once across the sale subtotal', () =>
       name: 'Three cents',
       priceCents: 3
     })
-    database.prepare('UPDATE settings SET tax_rate_basis_points = 1000 WHERE id = 1').run()
+    taxes.save([{ name: 'GST', rateBasisPoints: 1000 }])
 
     const quote = service.quote([
       { productId: twoCentProductId, quantity: 1 },
@@ -106,10 +481,7 @@ test('checkout resolves current price and stores historical line snapshots', () 
       stockQuantity: 5
     })
 
-    const sale = service.completeCheckout({
-      items: [{ productId, quantity: 2 }],
-      paymentMethod: 'cash'
-    })
+    const sale = completeWithPayment(service, [{ productId, quantity: 2 }])
     products.update(productId, {
       sku: 'COFFEE-LARGE',
       name: 'Renamed coffee',
@@ -124,6 +496,221 @@ test('checkout resolves current price and stores historical line snapshots', () 
     assert.equal(sale.sale.items[0]?.unitPriceCents, 125)
     assert.equal(sale.sale.items[0]?.lineTotalCents, 250)
     assert.deepEqual(historicalSale.items, sale.sale.items)
+  })
+})
+
+test('transaction price overrides change the saved line and tax without changing the catalog', () => {
+  withSales(({ database, products, taxes, service }) => {
+    const productId = createProduct(products, {
+      sku: 'OVERRIDE',
+      name: 'Price adjusted item',
+      priceCents: 500,
+      stockQuantity: 4
+    })
+    taxes.save([{ name: 'GST', rateBasisPoints: 1000 }])
+    const items = [
+      {
+        productId,
+        quantity: 2,
+        priceOverride: { unitPriceCents: 250, reason: 'Price match' }
+      }
+    ]
+    const quote = service.quote(items)
+    assert.equal(quote.items[0]?.catalogUnitPriceCents, 500)
+    assert.equal(quote.items[0]?.unitPriceCents, 250)
+    assert.equal(quote.subtotalCents, 500)
+    assert.equal(quote.taxCents, 50)
+
+    const checkout = service.completeCheckout({
+      items,
+      tenders: [{ type: 'cash', amountCents: 600 }]
+    })
+    const savedItem = service.getById(checkout.sale.id).items[0]!
+    assert.equal(savedItem.originalUnitPriceCents, 500)
+    assert.equal(savedItem.unitPriceCents, 250)
+    assert.equal(savedItem.priceOverrideReason, 'Price match')
+    assert.equal(savedItem.lineTotalCents, 500)
+    assert.deepEqual(checkout.sale.payments, [
+      { type: 'cash', amountTenderedCents: 600, amountAppliedCents: 550, changeCents: 50 }
+    ])
+    assert.equal(
+      (
+        database.prepare('SELECT price_cents FROM products WHERE id = ?').get(productId) as {
+          price_cents: number
+        }
+      ).price_cents,
+      500
+    )
+    const saleYear = Number(checkout.sale.createdAt.slice(0, 4))
+    const report = service.report({ type: 'year', year: saleYear })
+    assert.equal(report.totals.cashReceivedCents, 550)
+    assert.equal(report.totals.cardReceivedCents, 0)
+
+    products.update(productId, {
+      sku: 'OVERRIDE',
+      name: 'Renamed after sale',
+      priceCents: 700,
+      stockQuantity: 4
+    })
+    const historicalItem = service.getById(checkout.sale.id).items[0]!
+    assert.equal(historicalItem.name, 'Price adjusted item')
+    assert.equal(historicalItem.originalUnitPriceCents, 500)
+    assert.equal(historicalItem.unitPriceCents, 250)
+    assert.equal(historicalItem.priceOverrideReason, 'Price match')
+  })
+})
+
+test('validates override prices and requires a non-empty reason', () => {
+  withSales(({ products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'BAD-OVERRIDE',
+      name: 'Bad override item',
+      priceCents: 100
+    })
+    assertSaleError(
+      toSalesResult(() =>
+        service.quote([
+          { productId, quantity: 1, priceOverride: { unitPriceCents: -1, reason: 'Mistake' } }
+        ])
+      ),
+      'invalid-input'
+    )
+    assertSaleError(
+      toSalesResult(() =>
+        service.quote([
+          { productId, quantity: 1, priceOverride: { unitPriceCents: 50, reason: '   ' } }
+        ])
+      ),
+      'invalid-input'
+    )
+  })
+})
+
+test('records split tender amounts and summarizes cash and card applied totals', () => {
+  withSales(({ products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'SPLIT',
+      name: 'Split payment item',
+      priceCents: 1000
+    })
+    const checkout = service.completeCheckout({
+      items: [{ productId, quantity: 1 }],
+      tenders: [
+        { type: 'cash', amountCents: 200 },
+        { type: 'debit', amountCents: 300 },
+        { type: 'credit', amountCents: 500 }
+      ]
+    })
+    assert.equal(checkout.sale.paymentMethod, 'split')
+    assert.deepEqual(
+      checkout.sale.payments.map(
+        ({ type, amountTenderedCents, amountAppliedCents, changeCents }) => [
+          type,
+          amountTenderedCents,
+          amountAppliedCents,
+          changeCents
+        ]
+      ),
+      [
+        ['cash', 200, 200, 0],
+        ['debit', 300, 300, 0],
+        ['credit', 500, 500, 0]
+      ]
+    )
+    const report = service.report({
+      type: 'year',
+      year: Number(checkout.sale.createdAt.slice(0, 4))
+    })
+    assert.equal(report.totals.cashReceivedCents, 200)
+    assert.equal(report.totals.cardReceivedCents, 800)
+  })
+})
+
+test('rejects uncovered sales and card overpayment without writing a sale', () => {
+  withSales(({ database, products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'PAYMENT-VALIDATION',
+      name: 'Payment validation item',
+      priceCents: 1000
+    })
+    assertSaleError(
+      toSalesResult(() =>
+        service.completeCheckout({
+          items: [{ productId, quantity: 1 }],
+          tenders: [{ type: 'cash', amountCents: 300 }]
+        })
+      ),
+      'insufficient-payment'
+    )
+    assertSaleError(
+      toSalesResult(() =>
+        service.completeCheckout({
+          items: [{ productId, quantity: 1 }],
+          tenders: [{ type: 'credit', amountCents: 1001 }]
+        })
+      ),
+      'invalid-input'
+    )
+    assertSaleError(
+      toSalesResult(() =>
+        service.completeCheckout({
+          items: [{ productId, quantity: 1 }],
+          tenders: [{ type: 'cash', amountCents: 0 }]
+        })
+      ),
+      'invalid-input'
+    )
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM sales').get()?.count, 0)
+  })
+})
+
+test('completes a zero-total sale without requiring a payment entry', () => {
+  withSales(({ products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'FREE',
+      name: 'Free item',
+      priceCents: 0
+    })
+    const checkout = service.completeCheckout({
+      items: [{ productId, quantity: 1 }],
+      tenders: []
+    })
+    assert.equal(checkout.sale.totalCents, 0)
+    assert.equal(checkout.sale.paymentMethod, 'none')
+    assert.deepEqual(checkout.sale.payments, [])
+  })
+})
+
+test('rolls back sale, item, tender, and stock writes when a tender insert fails', () => {
+  withSales(({ database, products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'TENDER-ROLLBACK',
+      name: 'Tender rollback item',
+      priceCents: 300,
+      stockQuantity: 4
+    })
+    database.exec(`CREATE TRIGGER fail_sale_payment BEFORE INSERT ON sale_payments
+      BEGIN SELECT RAISE(ABORT, 'forced payment write failure'); END;`)
+
+    assert.throws(
+      () =>
+        service.completeCheckout({
+          items: [{ productId, quantity: 2 }],
+          tenders: [{ type: 'cash', amountCents: 600 }]
+        }),
+      /forced payment write failure/
+    )
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM sales').get()?.count, 0)
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM sale_items').get()?.count, 0)
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM sale_payments').get()?.count, 0)
+    assert.equal(
+      (
+        database.prepare('SELECT stock_quantity FROM products WHERE id = ?').get(productId) as {
+          stock_quantity: number
+        }
+      ).stock_quantity,
+      4
+    )
   })
 })
 
@@ -142,13 +729,14 @@ test('decrements tracked stock, allows exact stock, and leaves untracked stock a
       stockQuantity: null
     })
 
-    service.completeCheckout({
-      items: [
+    completeWithPayment(
+      service,
+      [
         { productId: trackedId, quantity: 2 },
         { productId: untrackedId, quantity: 100 }
       ],
-      paymentMethod: 'card'
-    })
+      'card'
+    )
 
     assert.equal(
       database.prepare('SELECT stock_quantity FROM products WHERE id = ?').get(trackedId)
@@ -178,13 +766,16 @@ test('rejects empty, malformed, inactive, unavailable, and insufficient-stock ch
     )
     assertSaleError(
       toSalesResult(() =>
-        service.completeCheckout({ items: [{ productId, quantity: 0 }], paymentMethod: 'cash' })
+        service.completeCheckout({ items: [{ productId, quantity: 0 }], tenders: [] })
       ),
       'invalid-input'
     )
     assertSaleError(
       toSalesResult(() =>
-        service.completeCheckout({ items: [{ productId, quantity: 1 }], paymentMethod: 'cheque' })
+        service.completeCheckout({
+          items: [{ productId, quantity: 1 }],
+          tenders: [{ type: 'cheque', amountCents: 99 }]
+        })
       ),
       'invalid-input'
     )
@@ -194,7 +785,10 @@ test('rejects empty, malformed, inactive, unavailable, and insufficient-stock ch
     )
 
     const insufficient = toSalesResult(() =>
-      service.completeCheckout({ items: [{ productId, quantity: 2 }], paymentMethod: 'cash' })
+      service.completeCheckout({
+        items: [{ productId, quantity: 2 }],
+        tenders: [{ type: 'cash', amountCents: 999 }]
+      })
     )
     assertSaleError(insufficient, 'insufficient-stock')
 
@@ -203,7 +797,7 @@ test('rejects empty, malformed, inactive, unavailable, and insufficient-stock ch
       toSalesResult(() =>
         service.completeCheckout({
           items: [{ productId, quantity: 1 }],
-          paymentMethod: 'cash'
+          tenders: [{ type: 'cash', amountCents: 999 }]
         })
       ),
       'unavailable-product'
@@ -224,8 +818,7 @@ test('rolls back sale and stock changes when writing a historical item fails', (
       BEGIN SELECT RAISE(ABORT, 'forced item write failure'); END;`)
 
     assert.throws(
-      () =>
-        service.completeCheckout({ items: [{ productId, quantity: 2 }], paymentMethod: 'cash' }),
+      () => completeWithPayment(service, [{ productId, quantity: 2 }]),
       /forced item write failure/
     )
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM sales').get()?.count, 0)
@@ -244,14 +837,8 @@ test('lists newest sales first and reports historical item counts', () => {
       name: 'History item',
       priceCents: 199
     })
-    const first = service.completeCheckout({
-      items: [{ productId, quantity: 1 }],
-      paymentMethod: 'cash'
-    })
-    const second = service.completeCheckout({
-      items: [{ productId, quantity: 2 }],
-      paymentMethod: 'card'
-    })
+    const first = completeWithPayment(service, [{ productId, quantity: 1 }])
+    const second = completeWithPayment(service, [{ productId, quantity: 2 }], 'card')
 
     assert.deepEqual(
       service.listRecent().map(({ id, itemCount }) => [id, itemCount]),
@@ -263,6 +850,456 @@ test('lists newest sales first and reports historical item counts', () => {
   })
 })
 
+test('daily product summaries net returns, preserve overrides, and group by local day and product identity', () => {
+  const previousTimeZone = process.env.TZ
+  process.env.TZ = 'America/Vancouver'
+
+  try {
+    withSales(({ database, products, service }) => {
+      const widgetId = createProduct(products, {
+        sku: 'WIDGET-OLD',
+        name: 'Widget',
+        priceCents: 1500
+      })
+      const historicId = createProduct(products, {
+        sku: 'HISTORIC',
+        name: 'Historic item',
+        priceCents: 500
+      })
+      const boundaryId = createProduct(products, {
+        sku: 'DAY-START',
+        name: 'Day start item',
+        priceCents: 99
+      })
+
+      const boundarySale = service.completeCheckout({
+        items: [{ productId: boundaryId, quantity: 1 }],
+        tenders: [
+          { type: 'cash', amountCents: 49 },
+          { type: 'debit', amountCents: 50 }
+        ]
+      })
+      setSaleTimestamp(database, boundarySale.sale.id, localTimestamp(2025, 3, 9, 0))
+
+      const sale = completeWithPayment(service, [
+        {
+          productId: widgetId,
+          quantity: 3,
+          priceOverride: { unitPriceCents: 1100, reason: 'Manager adjustment' }
+        }
+      ])
+      setSaleTimestamp(database, sale.sale.id, localTimestamp(2025, 3, 9, 23))
+
+      const historic = completeWithPayment(service, [
+        {
+          productId: historicId,
+          quantity: 1,
+          priceOverride: { unitPriceCents: 750, reason: 'Sale price' }
+        }
+      ])
+      setSaleTimestamp(database, historic.sale.id, localTimestamp(2025, 3, 9, 12))
+      database
+        .prepare('UPDATE sale_items SET product_id = NULL WHERE sale_id = ?')
+        .run(historic.sale.id)
+
+      products.update(widgetId, {
+        sku: 'WIDGET-NEW',
+        name: 'Updated widget',
+        priceCents: 2000,
+        stockQuantity: null
+      })
+      const returned = service.completeReturn({
+        reason: 'Customer return',
+        items: [{ productId: widgetId, quantity: 1, restock: false }],
+        tenders: [{ type: 'cash', amountCents: 2000 }]
+      })
+      setSaleTimestamp(database, returned.return.id, localTimestamp(2025, 3, 9, 23, 30))
+
+      const nextDaySale = completeWithPayment(service, [{ productId: widgetId, quantity: 2 }])
+      setSaleTimestamp(database, nextDaySale.sale.id, localTimestamp(2025, 3, 10, 0))
+
+      const productsForMarch9 = service.productsForDay('2025-03-09')
+      assert.deepEqual(
+        productsForMarch9.map(({ productId, sku, name, netQuantity, netAmountCents }) => ({
+          productId,
+          sku,
+          name,
+          netQuantity,
+          netAmountCents
+        })),
+        [
+          {
+            productId: boundaryId,
+            sku: 'DAY-START',
+            name: 'Day start item',
+            netQuantity: 1,
+            netAmountCents: 99
+          },
+          {
+            productId: null,
+            sku: 'HISTORIC',
+            name: 'Historic item',
+            netQuantity: 1,
+            netAmountCents: 750
+          },
+          {
+            productId: widgetId,
+            sku: 'WIDGET-NEW',
+            name: 'Updated widget',
+            netQuantity: 2,
+            netAmountCents: 1300
+          }
+        ]
+      )
+      assert.deepEqual(
+        service
+          .productsForDay('2025-03-10')
+          .map(({ netQuantity, netAmountCents }) => [netQuantity, netAmountCents]),
+        [[2, 4000]]
+      )
+      assert.deepEqual(
+        service
+          .productsByDayInPeriod({
+            type: 'custom',
+            startDate: '2025-03-09',
+            endDate: '2025-03-10'
+          })
+          .map(({ date, products }) => [
+            date,
+            products.map(({ netQuantity, netAmountCents }) => [netQuantity, netAmountCents])
+          ]),
+        [
+          ['2025-03-10', [[2, 4000]]],
+          [
+            '2025-03-09',
+            [
+              [1, 99],
+              [1, 750],
+              [2, 1300]
+            ]
+          ]
+        ]
+      )
+      assertSaleError(
+        toSalesResult(() => service.productsForDay('2025-02-30')),
+        'invalid-period'
+      )
+    })
+  } finally {
+    if (previousTimeZone === undefined) delete process.env.TZ
+    else process.env.TZ = previousTimeZone
+  }
+})
+
+test('resolves day, month, year, and inclusive custom date periods in local time', () => {
+  const day = resolveSalesPeriod({ type: 'day', date: '2025-03-09' })
+  const month = resolveSalesPeriod({ type: 'month', month: '2025-03' })
+  const year = resolveSalesPeriod({ type: 'year', year: 2025 })
+  const custom = resolveSalesPeriod({
+    type: 'custom',
+    startDate: '2025-03-09',
+    endDate: '2025-03-10'
+  })
+
+  assert.equal(day.fileName, 'sales-2025-03-09.csv')
+  assert.equal(month.fileName, 'sales-2025-03.csv')
+  assert.equal(year.fileName, 'sales-2025.csv')
+  assert.equal(custom.fileName, 'sales-2025-03-09-to-2025-03-10.csv')
+  assert.equal(day.startInclusive, localTimestamp(2025, 3, 9, 0))
+  assert.equal(day.endExclusive, localTimestamp(2025, 3, 10, 0))
+  assert.equal(month.startInclusive, localTimestamp(2025, 3, 1, 0))
+  assert.equal(month.endExclusive, localTimestamp(2025, 4, 1, 0))
+  assert.equal(year.startInclusive, localTimestamp(2025, 1, 1, 0))
+  assert.equal(year.endExclusive, localTimestamp(2026, 1, 1, 0))
+  assert.equal(custom.startInclusive, localTimestamp(2025, 3, 9, 0))
+  assert.equal(custom.endExclusive, localTimestamp(2025, 3, 11, 0))
+})
+
+test('sales report filters all supported periods and includes both custom endpoints', () => {
+  withSales(({ database, products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'REPORT',
+      name: 'Report item',
+      priceCents: 100
+    })
+    const createAt = (date: [number, number, number], paymentMethod: 'cash' | 'card'): number => {
+      const sale = completeWithPayment(service, [{ productId, quantity: 1 }], paymentMethod)
+      setSaleTimestamp(database, sale.sale.id, localTimestamp(...date))
+      return sale.sale.id
+    }
+
+    const dec31 = createAt([2024, 12, 31], 'cash')
+    const jan1 = createAt([2025, 1, 1], 'card')
+    const mar31 = createAt([2025, 3, 31], 'cash')
+    const apr1 = createAt([2025, 4, 1], 'card')
+    const nextYear = createAt([2026, 1, 1], 'card')
+
+    const day = service.report({ type: 'day', date: '2025-03-31' })
+    const month = service.report({ type: 'month', month: '2025-03' })
+    const year = service.report({ type: 'year', year: 2025 })
+    const custom = service.report({
+      type: 'custom',
+      startDate: '2024-12-31',
+      endDate: '2025-01-01'
+    })
+
+    assert.deepEqual(
+      day.sales.map((sale) => sale.id),
+      [mar31]
+    )
+    assert.deepEqual(
+      month.sales.map((sale) => sale.id),
+      [mar31]
+    )
+    assert.deepEqual(
+      year.sales.map((sale) => sale.id),
+      [apr1, mar31, jan1]
+    )
+    assert.equal(
+      year.sales.some((sale) => sale.id === nextYear),
+      false
+    )
+    assert.deepEqual(
+      custom.sales.map((sale) => sale.id),
+      [jan1, dec31]
+    )
+  })
+})
+
+test('sales reports and PDF exports include more than 100 transactions', async () => {
+  await withSales(async ({ database, products, service, taxes }) => {
+    const productId = createProduct(products, {
+      sku: 'BULK-REPORT',
+      name: 'Bulk report item',
+      priceCents: 100
+    })
+    taxes.save([{ name: 'GST', rateBasisPoints: 500 }])
+
+    for (let index = 0; index < 101; index += 1) {
+      const paymentMethod = index % 2 === 0 ? 'cash' : 'card'
+      const sale = completeWithPayment(service, [{ productId, quantity: 1 }], paymentMethod)
+      setSaleTimestamp(database, sale.sale.id, localTimestamp(2025, 6, 15, 12))
+    }
+
+    const report = service.report({ type: 'year', year: 2025 })
+    assert.equal(report.sales.length, 101)
+    assert.equal(report.totals.saleCount, 101)
+    assert.equal(report.totals.grossSalesSubtotalCents, 10100)
+    assert.equal(report.totals.grossSalesTaxCents, 505)
+    assert.equal(report.totals.grossSalesTotalCents, 10605)
+    assert.equal(report.totals.cashReceivedCents, 5355)
+    assert.equal(report.totals.cardReceivedCents, 5250)
+    assert.ok(report.sales[0]!.id > report.sales[100]!.id)
+
+    let pdfHtml = ''
+    const exporter = createSalesExportService(
+      service,
+      async () => true,
+      async (_fileName, html) => {
+        pdfHtml = html
+        return true
+      }
+    )
+    const pdf = await exporter.exportPdf({ type: 'year', year: 2025 }, ['overview'])
+    assert.deepEqual(pdf, { canceled: false, rowCount: 101 })
+    assert.equal((pdfHtml.match(/class="transaction-number"/g) ?? []).length, 101)
+    assert.match(pdfHtml, /Net quantity/)
+  })
+})
+
+test('sales report rejects invalid dates and reversed custom ranges', () => {
+  withSales(({ service }) => {
+    assertSaleError(
+      toSalesResult(() => service.report({ type: 'day', date: '2025-02-30' })),
+      'invalid-period'
+    )
+    assertSaleError(
+      toSalesResult(() =>
+        service.report({ type: 'custom', startDate: '2025-03-02', endDate: '2025-03-01' })
+      ),
+      'invalid-period'
+    )
+  })
+})
+
+test('CSV export writes one transaction per row and reports save cancellation or failure', async () => {
+  await withSales(async ({ database, products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'CSV',
+      name: 'CSV item',
+      priceCents: 125
+    })
+    const sale = service.completeCheckout({
+      items: [{ productId, quantity: 2 }],
+      tenders: [{ type: 'cash', amountCents: 300 }]
+    })
+    setSaleTimestamp(database, sale.sale.id, localTimestamp(2025, 3, 9))
+
+    let savedName = ''
+    let savedContents = ''
+    const exporter = createSalesExportService(service, async (fileName, contents) => {
+      savedName = fileName
+      savedContents = contents
+      return true
+    })
+    const exported = await exporter.exportCsv({ type: 'day', date: '2025-03-09' })
+    assert.deepEqual(exported, { canceled: false, rowCount: 1 })
+    assert.equal(savedName, 'sales-2025-03-09.csv')
+    assert.match(
+      savedContents,
+      /^transaction_type,transaction_number,created_at_local,payment_method,payment_breakdown,return_reason,item_count,subtotal_cad,tax_cad,total_cad\r\n/
+    )
+    assert.equal(
+      savedContents.split('\r\n')[1],
+      `sale,Invoice #${sale.sale.transactionNumber},2025-03-09 12:00:00,cash,"Cash: tendered 3.00, applied 2.50, change 0.50",,1,2.50,0.00,2.50`
+    )
+
+    const canceledExporter = createSalesExportService(service, async () => false)
+    assert.deepEqual(await canceledExporter.exportCsv({ type: 'day', date: '2025-03-09' }), {
+      canceled: true
+    })
+
+    const failedExporter = createSalesExportService(service, async () => {
+      throw new Error('write failed')
+    })
+    assertSaleError(
+      await toSalesResultAsync(() => failedExporter.exportCsv({ type: 'day', date: '2025-03-09' })),
+      'export-failed'
+    )
+  })
+})
+
+test('PDF report includes selected summaries, signed transaction details, and escaped daily products', async () => {
+  const previousTimeZone = process.env.TZ
+  process.env.TZ = 'America/Vancouver'
+
+  try {
+    await withSales(async ({ database, products, service }) => {
+      const productId = createProduct(products, {
+        sku: 'SKU<&>',
+        name: 'Coffee <filter> & mix',
+        priceCents: 1000
+      })
+      const sale = completeWithPayment(service, [
+        {
+          productId,
+          quantity: 2,
+          priceOverride: { unitPriceCents: 700, reason: 'One day promotion' }
+        }
+      ])
+      setSaleTimestamp(database, sale.sale.id, localTimestamp(2025, 3, 9, 10))
+      const returned = service.completeReturn({
+        reason: 'Damaged <seal> & leaking',
+        items: [{ productId, quantity: 1, restock: false }],
+        tenders: [{ type: 'credit', amountCents: 1000 }]
+      })
+      setSaleTimestamp(database, returned.return.id, localTimestamp(2025, 3, 9, 11))
+
+      let savedFileName = ''
+      let savedHtml = ''
+      const exporter = createSalesExportService(
+        service,
+        async () => true,
+        async (fileName, html) => {
+          savedFileName = fileName
+          savedHtml = html
+          return true
+        }
+      )
+      const result = await exporter.exportPdf({ type: 'day', date: '2025-03-09' }, [
+        'overview',
+        'net'
+      ])
+
+      assert.deepEqual(result, { canceled: false, rowCount: 2 })
+      assert.equal(savedFileName, 'sales-2025-03-09.pdf')
+      assert.match(savedHtml, /Day · 09\/03\/25/)
+      assert.match(savedHtml, /Transactions/)
+      assert.match(savedHtml, /Net total/)
+      assert.doesNotMatch(savedHtml, /Gross subtotal/)
+      assert.match(savedHtml, /Invoice #[^<]+/)
+      assert.match(savedHtml, /Return #[^<]+/)
+      assert.match(savedHtml, /Damaged &lt;seal&gt; &amp; leaking/)
+      assert.match(savedHtml, /Coffee &lt;filter&gt; &amp; mix/)
+      assert.match(savedHtml, /SKU&lt;&amp;&gt;/)
+      assert.match(savedHtml, /Net amount \(before tax\)/)
+      assert.match(savedHtml, /net quantity/i)
+      assert.match(savedHtml, /-\$10\.00/)
+      assert.doesNotMatch(savedHtml, /One day promotion/)
+      assert.doesNotMatch(savedHtml, /Damaged <seal>/)
+    })
+  } finally {
+    if (previousTimeZone === undefined) delete process.env.TZ
+    else process.env.TZ = previousTimeZone
+  }
+})
+
+test('PDF export handles empty periods, canceled saves, invalid summary groups, and write failures', async () => {
+  await withSales(async ({ service }) => {
+    let emptyReportHtml = ''
+    const canceledExporter = createSalesExportService(
+      service,
+      async () => true,
+      async (_fileName, html) => {
+        emptyReportHtml = html
+        return false
+      }
+    )
+    const canceled = await canceledExporter.exportPdf({ type: 'day', date: '2025-03-09' }, [])
+    assert.deepEqual(canceled, { canceled: true })
+    assert.match(emptyReportHtml, /No transactions in this period/)
+    assert.match(emptyReportHtml, /No product details in this period/)
+    assert.doesNotMatch(emptyReportHtml, /<section class="summary-section">/)
+
+    assertSaleError(
+      await toSalesResultAsync(() =>
+        canceledExporter.exportPdf({ type: 'day', date: '2025-03-09' }, ['overview', 'bad'])
+      ),
+      'invalid-input'
+    )
+
+    const failedExporter = createSalesExportService(
+      service,
+      async () => true,
+      async () => {
+        throw new Error('PDF generation failed')
+      }
+    )
+    assertSaleError(
+      await toSalesResultAsync(() =>
+        failedExporter.exportPdf({ type: 'day', date: '2025-03-09' }, ['overview'])
+      ),
+      'export-failed'
+    )
+  })
+})
+
+test('CSV quotes fields containing commas, quotes, and line breaks', () => {
+  const csv = serializeSalesCsv([
+    {
+      id: 7,
+      transactionNumber: '20250309-0007',
+      transactionType: 'sale',
+      returnReason: null,
+      subtotalCents: 100,
+      taxCents: 0,
+      totalCents: 100,
+      paymentMethod: 'cash',
+      payments: [
+        { type: 'cash', amountTenderedCents: 100, amountAppliedCents: 100, changeCents: 0 }
+      ],
+      createdAt: 'invalid date, "detail"\ncontinued',
+      itemCount: 1
+    }
+  ])
+
+  assert.ok(
+    csv.endsWith(
+      'sale,Invoice #20250309-0007,"invalid date, ""detail""\ncontinued",cash,"Cash: tendered 1.00, applied 1.00, change 0.00",,1,1.00,0.00,1.00'
+    )
+  )
+})
+
 test('completed sale and item snapshots persist after reopening the database', () => {
   const directory = mkdtempSync(join(tmpdir(), 'pos-sales-'))
   const path = join(directory, 'sales.sqlite')
@@ -270,31 +1307,199 @@ test('completed sale and item snapshots persist after reopening the database', (
   database.pragma('foreign_keys = ON')
   database.exec(schema)
   const products = createProductRepository(database)
-  const settings = createSettingsRepository(database)
   const productId = createProduct(products, {
     sku: 'PERSIST',
     name: 'Persistent item',
     priceCents: 499,
     stockQuantity: 3
   })
-  const sale = createSalesService(createSalesRepository(database), settings).completeCheckout({
-    items: [{ productId, quantity: 1 }],
-    paymentMethod: 'cash'
-  })
+  const sales = createSalesService(createSalesRepository(database))
+  const sale = completeWithPayment(sales, [{ productId, quantity: 1 }])
   database.close()
 
   try {
     database = new Database(path)
-    const reopened = createSalesService(
-      createSalesRepository(database),
-      createSettingsRepository(database)
-    )
+    const reopened = createSalesService(createSalesRepository(database))
     const persisted = reopened.getById(sale.sale.id)
+    assert.equal(persisted.transactionNumber, sale.sale.transactionNumber)
     assert.equal(persisted.totalCents, 499)
     assert.equal(persisted.items[0]?.name, 'Persistent item')
     assert.equal(persisted.items[0]?.unitPriceCents, 499)
+    assert.equal(persisted.payments[0]?.amountAppliedCents, 499)
   } finally {
     if (database.open) database.close()
     rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('migration backfills historical payment types and original item prices', () => {
+  const database = new Database(':memory:')
+  database.pragma('foreign_keys = ON')
+  database.exec(
+    readFileSync(
+      join(process.cwd(), 'src/main/database/migrations/001_initial_schema.sql'),
+      'utf8'
+    ) +
+      readFileSync(
+        join(process.cwd(), 'src/main/database/migrations/002_multiple_tax_rates.sql'),
+        'utf8'
+      )
+  )
+  try {
+    const cashSale = Number(
+      database
+        .prepare(
+          `INSERT INTO sales (subtotal_cents, tax_cents, total_cents, payment_method)
+           VALUES (200, 0, 200, 'cash')`
+        )
+        .run().lastInsertRowid
+    )
+    const cardSale = Number(
+      database
+        .prepare(
+          `INSERT INTO sales (subtotal_cents, tax_cents, total_cents, payment_method)
+           VALUES (300, 0, 300, 'card')`
+        )
+        .run().lastInsertRowid
+    )
+    const zeroSale = Number(
+      database
+        .prepare(
+          `INSERT INTO sales (subtotal_cents, tax_cents, total_cents, payment_method)
+           VALUES (0, 0, 0, 'cash')`
+        )
+        .run().lastInsertRowid
+    )
+    database
+      .prepare(
+        `INSERT INTO sale_items
+           (sale_id, product_id, sku, product_name, unit_price_cents, quantity, line_total_cents)
+         VALUES (?, NULL, 'OLD', 'Old item', 200, 1, 200)`
+      )
+      .run(cashSale)
+    database.exec(
+      readFileSync(
+        join(process.cwd(), 'src/main/database/migrations/003_tenders_and_price_overrides.sql'),
+        'utf8'
+      )
+    )
+
+    const payments = database
+      .prepare(
+        'SELECT sale_id, payment_type, amount_tendered_cents, amount_applied_cents, change_cents FROM sale_payments ORDER BY sale_id'
+      )
+      .all()
+    assert.deepEqual(payments, [
+      {
+        sale_id: cashSale,
+        payment_type: 'cash',
+        amount_tendered_cents: null,
+        amount_applied_cents: 200,
+        change_cents: 0
+      },
+      {
+        sale_id: cardSale,
+        payment_type: 'card',
+        amount_tendered_cents: 300,
+        amount_applied_cents: 300,
+        change_cents: 0
+      },
+      {
+        sale_id: zeroSale,
+        payment_type: 'cash',
+        amount_tendered_cents: null,
+        amount_applied_cents: 0,
+        change_cents: 0
+      }
+    ])
+    assert.equal(
+      (
+        database
+          .prepare('SELECT original_unit_price_cents FROM sale_items WHERE sale_id = ?')
+          .get(cashSale) as { original_unit_price_cents: number }
+      ).original_unit_price_cents,
+      200
+    )
+    const legacyBrandSale = Number(
+      database
+        .prepare(
+          `INSERT INTO sales (subtotal_cents, tax_cents, total_cents, payment_method)
+           VALUES (300, 0, 300, 'card')`
+        )
+        .run().lastInsertRowid
+    )
+    database
+      .prepare(
+        `INSERT INTO sale_payments
+           (sale_id, payment_type, amount_tendered_cents, amount_applied_cents, change_cents)
+         VALUES (?, ?, ?, ?, 0)`
+      )
+      .run(legacyBrandSale, 'mastercard', 100, 100)
+    database
+      .prepare(
+        `INSERT INTO sale_payments
+           (sale_id, payment_type, amount_tendered_cents, amount_applied_cents, change_cents)
+         VALUES (?, ?, ?, ?, 0)`
+      )
+      .run(legacyBrandSale, 'visa', 200, 200)
+    database.exec(
+      readFileSync(
+        join(process.cwd(), 'src/main/database/migrations/004_credit_tender_type.sql'),
+        'utf8'
+      )
+    )
+    database.exec(
+      readFileSync(
+        join(process.cwd(), 'src/main/database/migrations/005_business_email.sql'),
+        'utf8'
+      )
+    )
+    database.exec(
+      readFileSync(
+        join(process.cwd(), 'src/main/database/migrations/006_receipt_business_details.sql'),
+        'utf8'
+      )
+    )
+    database.exec(
+      readFileSync(
+        join(process.cwd(), 'src/main/database/migrations/007_standalone_returns.sql'),
+        'utf8'
+      )
+    )
+    database.exec(
+      readFileSync(
+        join(process.cwd(), 'src/main/database/migrations/008_transaction_numbers.sql'),
+        'utf8'
+      )
+    )
+    backfillTransactionNumbers(database)
+    const historicalSales = createSalesService(createSalesRepository(database))
+    assert.equal(historicalSales.getById(zeroSale).paymentMethod, 'cash')
+    const migratedSales = createSalesService(createSalesRepository(database))
+    assert.equal(migratedSales.getById(cardSale).payments[0]?.type, 'card')
+    assert.deepEqual(
+      migratedSales.getById(legacyBrandSale).payments.map(({ type }) => type),
+      ['mastercard', 'visa']
+    )
+
+    const creditSale = Number(
+      database
+        .prepare(
+          `INSERT INTO sales
+             (subtotal_cents, tax_cents, total_cents, payment_method, transaction_number)
+           VALUES (400, 0, 400, 'card', '20990101-0001')`
+        )
+        .run().lastInsertRowid
+    )
+    database
+      .prepare(
+        `INSERT INTO sale_payments
+           (sale_id, payment_type, amount_tendered_cents, amount_applied_cents, change_cents)
+         VALUES (?, 'credit', 400, 400, 0)`
+      )
+      .run(creditSale)
+    assert.equal(migratedSales.getById(creditSale).payments[0]?.type, 'credit')
+  } finally {
+    database.close()
   }
 })

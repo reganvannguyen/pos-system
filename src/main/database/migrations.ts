@@ -1,12 +1,30 @@
 import initialSchema from './migrations/001_initial_schema.sql?raw'
+import multipleTaxRates from './migrations/002_multiple_tax_rates.sql?raw'
+import tendersAndPriceOverrides from './migrations/003_tenders_and_price_overrides.sql?raw'
+import creditTenderType from './migrations/004_credit_tender_type.sql?raw'
+import businessEmail from './migrations/005_business_email.sql?raw'
+import receiptBusinessDetails from './migrations/006_receipt_business_details.sql?raw'
+import standaloneReturns from './migrations/007_standalone_returns.sql?raw'
+import transactionNumbers from './migrations/008_transaction_numbers.sql?raw'
+import { backfillTransactionNumbers } from './transaction-numbers'
 import type { PosDatabase } from './types'
 
 interface Migration {
   version: number
   sql: string
+  afterSql?: (database: PosDatabase) => void
 }
 
-const migrations: Migration[] = [{ version: 1, sql: initialSchema }]
+const migrations: Migration[] = [
+  { version: 1, sql: initialSchema },
+  { version: 2, sql: multipleTaxRates },
+  { version: 3, sql: tendersAndPriceOverrides },
+  { version: 4, sql: creditTenderType },
+  { version: 5, sql: businessEmail },
+  { version: 6, sql: receiptBusinessDetails },
+  { version: 7, sql: standaloneReturns },
+  { version: 8, sql: transactionNumbers, afterSql: backfillTransactionNumbers }
+]
 
 export function runMigrations(database: PosDatabase): void {
   let currentVersion = database.pragma('user_version', { simple: true }) as number
@@ -26,6 +44,7 @@ export function runMigrations(database: PosDatabase): void {
 
     database.transaction(() => {
       database.exec(migration.sql)
+      migration.afterSql?.(database)
       database.pragma(`user_version = ${migration.version}`)
     })()
 

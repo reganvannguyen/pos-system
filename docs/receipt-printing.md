@@ -1,156 +1,70 @@
-# Receipt Printing
+# Receipt Settings and Delivery
 
 ## 1. Goal
 
-Receipts are generated from completed sale data already stored in SQLite.
+Receipts are generated from a completed transaction already stored in SQLite. After each successful sale or return,
+the cashier can print, prepare an email, prepare a text, or finish without a receipt. Receipt failures
+must never undo a sale.
 
-Printing must not be required for the sale itself to succeed.
+## 2. Saved Receipt Data
 
-## 2. Receipt Data
+Build each receipt from the sale snapshots and current saved receipt details:
 
-A receipt should be built from:
+- Company name, address, city, province, postal code, phone, contact email, GST/HST number, and
+  website. Optional details are omitted when blank.
+- Persisted invoice or return number, local date in `DD/MM/YY` format, local time in 12-hour format,
+  subtotal, tax lines, and total.
+- Historical item names, SKUs, quantities, prices, and line totals.
+- Total tendered, change due, payment type, and saved tax snapshots.
 
-### Sale
+Do not show transaction price-override reasons on receipts. Customer email addresses and phone
+numbers are used for a single compose attempt and are not stored in the POS database.
 
-- Sale ID.
-- Date/time.
-- Subtotal.
-- Tax.
-- Total.
-- Payment method.
+Settings provides a live 58 mm sample preview that reflects unsaved receipt-detail edits. The same
+escaped HTML template is used for preview, printing, and PDFs. Preview data is fictional and is not
+saved as a transaction.
 
-### Sale Items
+## 3. Post-Sale Receipt Choices
 
-- SKU if desired.
-- Product name.
-- Quantity.
-- Unit price.
-- Line total.
+After the sale commit succeeds, clear the cart and open the receipt dialog. The dialog offers Print,
+Email, Text, and Done. It is also available from Sales History so staff can prepare another copy.
 
-### Settings
+### Print
 
-- Business name.
-- Optional future business details.
-- Selected printer.
+Use the selected Windows printer and existing 58 mm layout. If no printer is selected or printing
+fails, keep the saved sale and offer the action again from Sales History.
 
-## 3. Printing Strategy
+### Email
 
-The MVP uses the Windows printing system rather than directly implementing a printer protocol.
+Ask for the customer's email address and generate a PDF using the saved sale. On Windows, use the
+default MAPI mail client to open a draft with the PDF attached when supported. If attachment
+handoff is unavailable, open a normal email draft and let the cashier open the PDF from its folder
+to attach it. The sending account is controlled by the mail client; the business email in Settings
+is a store contact shown on the receipt.
 
-```text
-Saved sale
-    |
-    v
-Build receipt HTML
-    |
-    v
-Electron print window
-    |
-    v
-Windows printer driver
-    |
-    v
-Thermal receipt printer
-```
+### Text
 
-This allows the POS to work with a broad range of receipt printers as long as Windows recognizes the printer and a compatible driver is installed.
+Ask for a phone number and prepare a short message containing the store name, invoice number,
+date/time, and total. Open the operating system's messaging composer when available. If no app can
+open the draft, show the message with a Copy action. The POS does not send or track delivery.
 
-## 4. Printer Selection
+## 4. PDF and Printer Layout
 
-Electron can enumerate printers available to the computer.
+Use the escaped 58 mm thermal layout for printer and PDF output. The PDF uses a content-driven
+height. Historical reprints use the latest saved store details together with the original sale's
+item, tax, and tender snapshots. No receipt reason, customer contact data, or live product data is
+added to the PDF.
 
-The Settings screen should display those printers and save the chosen Windows printer name.
+## 5. Errors and Recovery
 
-Conceptually:
+- Printing, PDF generation, or app-launch failure leaves the sale saved.
+- Retry failed actions from the receipt dialog or reopen the same choices in Sales History.
+- If an email draft cannot be opened, keep the PDF accessible and show the subject/body for copying.
+- If a text composer cannot be opened, show the prepared message for copying.
+- Say when a compose app opened, but never claim that a message was sent or delivered.
 
-```text
-Receipt Printer
-[ EPSON TM-T20III             v ]
+No automatic printing or online sending service is used.
 
-[x] Print automatically after sale
-```
-
-Do not hard-code a printer model into the application.
-
-## 5. Receipt Width
-
-The layout should support common thermal paper widths.
-
-Initial target:
-
-- 80 mm receipt printers.
-
-A later enhancement can add:
-
-- 58 mm mode.
-
-The printable content width is smaller than the physical paper width, so layout CSS should leave appropriate margins.
-
-## 6. Receipt Rendering
-
-A receipt can be rendered as a minimal HTML document.
-
-Example structure:
-
-```text
-        STORE NAME
-------------------------------
-Sale #125
-2026-10-07 13:15
-
-Coke
-2 x $2.50              $5.00
-
-Chips
-1 x $3.00              $3.00
-------------------------------
-Subtotal                $8.00
-Tax                     $0.96
-TOTAL                   $8.96
-
-Payment: Cash
-
-        Thank you!
-```
-
-Use a simple receipt-friendly font and avoid layouts that depend on a particular screen size.
-
-## 7. Automatic Printing
-
-When auto-print is enabled:
-
-```text
-Complete sale
-    |
-    v
-Database commit succeeds
-    |
-    v
-Generate receipt
-    |
-    v
-Silent print to configured printer
-```
-
-When auto-print is disabled, show a Print Receipt action.
-
-## 8. Printer Failure
-
-If the printer is disconnected, out of paper, or otherwise fails:
-
-- The completed sale remains in SQLite.
-- Show a printing error to the user.
-- Allow reprinting from Sales History.
-
-Never roll back a completed sale because receipt printing failed.
-
-## 9. Future ESC/POS Support
-
-Many thermal printers support ESC/POS-style commands. Direct ESC/POS integration may later be useful for:
-
-- Automatic paper cutting.
-- Opening a cash drawer.
-- Printer-specific formatting.
-- QR/barcode output.
-
-This is not required for the first version. Windows driver printing keeps the MVP simpler and less dependent on a particular printer model.
+Receipts use the persisted `YYYYMMDD-0001` transaction number, labeled Invoice No. for sales and
+Return No. for returns. Return receipts show negative item, tax, total, and refund amounts. The
+internal return reason is excluded from printed and emailed receipts.

@@ -50,6 +50,18 @@ export function createProductService(repository: ProductRepository) {
       return product ? toProduct(product) : null
     },
 
+    getBySkuForReturn(value: unknown): Product | null {
+      if (typeof value !== 'string') {
+        throw new ProductServiceError('invalid-input', 'Enter a valid SKU.', 'sku')
+      }
+
+      const sku = normalizeSku(value)
+      if (!sku) return null
+
+      const product = repository.findBySku(sku)
+      return product ? toProduct(product) : null
+    },
+
     create(value: unknown): Product {
       const product = parseProductInput(value)
       ensureSkuAvailable(repository, product.sku)

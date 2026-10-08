@@ -6,6 +6,7 @@ import {
   calculateSubtotalCents,
   changeCartQuantity,
   clearCart,
+  overrideCartPrice,
   removeCartProduct
 } from '../src/renderer/src/cart'
 
@@ -45,6 +46,19 @@ test('repeated scans increase the existing line and preserve its price snapshot'
   assert.equal(twice[0]?.quantity, 2)
   assert.equal(twice[0]?.unitPriceCents, 125)
   assert.equal(calculateSubtotalCents(twice), 250)
+})
+
+test('transaction price overrides survive repeated scans and update the subtotal only in the cart', () => {
+  const overridden = overrideCartPrice(addProductToCart([], apple), apple.id, 75, 'Damaged box')
+  const scannedAgain = addProductToCart(overridden, { ...apple, priceCents: 250 })
+
+  assert.equal(scannedAgain[0]?.quantity, 2)
+  assert.deepEqual(scannedAgain[0]?.priceOverride, {
+    unitPriceCents: 75,
+    reason: 'Damaged box'
+  })
+  assert.equal(calculateSubtotalCents(scannedAgain), 150)
+  assert.equal(apple.priceCents, 125)
 })
 
 test('unknown or inactive product lookup leaves the cart unchanged', () => {

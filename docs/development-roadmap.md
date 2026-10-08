@@ -89,7 +89,8 @@ Goal: complete and persist real sales.
 Work:
 
 - Tax calculation.
-- Cash/card selection.
+- Cash, Debit, and Credit tenders, including split payments and cash change.
+- Transaction-only item price overrides with a reason recorded in Sales History.
 - Transactional sale write.
 - Save sale item snapshots.
 - Optional inventory decrement.
@@ -112,7 +113,6 @@ Work:
 - Enumerate Windows printers.
 - Printer selection setting.
 - Manual print.
-- Auto-print option.
 - Reprint from Sales History.
 - Graceful printer error handling.
 
@@ -128,7 +128,7 @@ Goal: make the application comfortable for daily use.
 Work:
 
 - Business name.
-- Tax rate.
+- One or more named tax rates.
 - Printer preference.
 - Keyboard-first interaction.
 - Loading/error states.
@@ -142,7 +142,25 @@ Done when:
 - Normal checkout requires very little mouse use.
 - Important configuration persists between launches.
 
-## M8 - Windows Packaging
+## M8 - Receipt Delivery Choices
+
+Goal: let staff choose how to provide a receipt after a saved sale.
+
+Work:
+
+- Show Print, Email, Text, and Done after every completed sale.
+- Generate an itemized receipt PDF from sale snapshots.
+- Open email and text drafts in the computer's configured applications.
+- Add a store contact email setting.
+- Offer the same actions again from Sales History.
+- Keep recipient details out of the local database.
+
+Done when:
+
+- Receipt actions never affect a saved sale or stock.
+- Draft and file-opening failures have clear recovery paths.
+
+## M9 - Windows Packaging
 
 Goal: deliver the POS like a normal Windows application.
 
@@ -163,7 +181,19 @@ Done when:
 - They can launch from an icon.
 - Node.js, npm, Docker, and developer tooling are not required.
 
-## M9 - Reliability / Release Candidate
+## Standalone Returns (Implemented)
+
+This feature was added after the original milestone sequence.
+
+- Return mode accepts active and inactive SKUs at current catalog prices and tax rates.
+- Returns have required internal reasons, exact split payouts, and per-line restock choices.
+- Return, tax, payout, and tracked-stock writes are atomic.
+- History, reports, CSV, and receipt delivery show signed returns and Return # identifiers.
+- Migration 007 preserves existing transactions as sales.
+
+Interactive Windows and payment-terminal verification remains part of the release checks.
+
+## M10 - Reliability / Release Candidate
 
 Goal: make the MVP safe enough for actual use.
 
@@ -184,7 +214,7 @@ Done when:
 
 ## MVP Release Boundary
 
-The MVP is complete after M9.
+The MVP is complete after M10.
 
 Features intentionally deferred:
 
