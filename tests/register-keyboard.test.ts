@@ -5,6 +5,7 @@ import {
   nextCartLineIndex,
   nextPaymentMethodIndex,
   resolveRegisterShortcut,
+  shouldPreserveNativeArrow,
   shouldUnfocusSkuOnEscape
 } from '../src/renderer/src/register-keyboard'
 
@@ -89,6 +90,46 @@ test('text-entry detection covers text inputs and editable descendants, not acti
   assert.equal(isTextEntryTarget(target({ type: 'checkbox' })), false)
   assert.equal(isTextEntryTarget(target({ type: 'button' })), false)
   assert.equal(isTextEntryTarget(target({ isContentEditable: true })), true)
+})
+
+test('arrow keys leave text fields at caret boundaries and keep editing within the text', () => {
+  const textarea = (value: string, selectionStart: number, selectionEnd = selectionStart) =>
+    ({
+      tagName: 'TEXTAREA',
+      value,
+      selectionStart,
+      selectionEnd,
+      parentElement: null
+    }) as unknown as EventTarget
+  const input = (value: string, selectionStart: number, selectionEnd = selectionStart) =>
+    ({
+      tagName: 'INPUT',
+      type: 'text',
+      value,
+      selectionStart,
+      selectionEnd,
+      parentElement: null
+    }) as unknown as EventTarget
+
+  const emptyTextarea = textarea('', 0)
+  assert.equal(shouldPreserveNativeArrow('ArrowDown', emptyTextarea), false)
+  assert.equal(shouldPreserveNativeArrow('ArrowUp', emptyTextarea), false)
+
+  const multiline = textarea('First line\nSecond line', 3)
+  assert.equal(shouldPreserveNativeArrow('ArrowDown', multiline), true)
+  assert.equal(shouldPreserveNativeArrow('ArrowUp', multiline), false)
+  assert.equal(
+    shouldPreserveNativeArrow('ArrowDown', textarea('First line\nSecond line', 18)),
+    false
+  )
+  assert.equal(shouldPreserveNativeArrow('ArrowRight', textarea('Address', 7)), false)
+  assert.equal(shouldPreserveNativeArrow('ArrowLeft', textarea('Address', 3)), true)
+  assert.equal(shouldPreserveNativeArrow('ArrowRight', textarea('Address', 1, 4)), true)
+
+  assert.equal(shouldPreserveNativeArrow('ArrowLeft', input('Name', 0)), false)
+  assert.equal(shouldPreserveNativeArrow('ArrowLeft', input('Name', 2)), true)
+  assert.equal(shouldPreserveNativeArrow('ArrowRight', input('Name', 4)), false)
+  assert.equal(shouldPreserveNativeArrow('ArrowRight', input('Name', 0)), true)
 })
 
 test('left and right arrows cycle through the payment methods', () => {

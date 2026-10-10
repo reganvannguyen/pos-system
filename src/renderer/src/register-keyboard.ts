@@ -159,13 +159,35 @@ export function shouldPreserveNativeArrow(key: string, target: EventTarget | nul
     if (element.isContentEditable) return true
 
     const tagName = element.tagName.toUpperCase()
-    if (tagName === 'TEXTAREA' || tagName === 'SELECT') return true
+    if (tagName === 'SELECT') return true
+    if (tagName === 'TEXTAREA') {
+      const textarea = element as HTMLTextAreaElement
+      const selectionStart = textarea.selectionStart
+      const selectionEnd = textarea.selectionEnd
+      if (selectionStart !== selectionEnd) return true
+
+      if (key === 'ArrowLeft') return selectionStart > 0
+      if (key === 'ArrowRight') return selectionEnd < textarea.value.length
+      if (key === 'ArrowUp') return textarea.value.slice(0, selectionStart).includes('\n')
+      return textarea.value.slice(selectionEnd).includes('\n')
+    }
     if (tagName === 'INPUT') {
-      if (key === 'ArrowLeft' || key === 'ArrowRight') return true
-      const inputType = (element as HTMLInputElement).type.toLowerCase()
-      return ['number', 'date', 'datetime-local', 'month', 'range', 'time', 'week'].includes(
-        inputType
-      )
+      const input = element as HTMLInputElement
+      const inputType = input.type.toLowerCase()
+      if (
+        ['number', 'date', 'datetime-local', 'month', 'range', 'time', 'week'].includes(inputType)
+      ) {
+        return true
+      }
+      if (!['text', 'search', 'url', 'tel', 'email', 'password'].includes(inputType)) return false
+
+      const selectionStart = input.selectionStart
+      const selectionEnd = input.selectionEnd
+      if (selectionStart === null || selectionEnd === null) return true
+      if (selectionStart !== selectionEnd) return true
+      if (key === 'ArrowLeft') return selectionStart > 0
+      if (key === 'ArrowRight') return selectionEnd < input.value.length
+      return false
     }
 
     element = element.parentElement
