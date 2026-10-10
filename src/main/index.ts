@@ -91,6 +91,9 @@ function registerSalesHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.salesCompleteReturn, (_event, request: unknown) =>
     toSalesResult(() => requireSalesService().completeReturn(request))
   )
+  ipcMain.handle(IPC_CHANNELS.salesRecordChargePayment, (_event, request: unknown) =>
+    toSalesResult(() => requireSalesService().recordChargePayment(request))
+  )
   ipcMain.handle(IPC_CHANNELS.salesListRecent, () =>
     toSalesResult(() => requireSalesService().listRecent())
   )

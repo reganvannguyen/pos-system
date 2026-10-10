@@ -135,6 +135,13 @@ export function serializeSalesCsv(sales: SaleSummary[]): string {
             : formatCents(payment.amountTenderedCents)
         return `${type}: tendered ${tendered}, applied ${formatCents(payment.amountAppliedCents)}, change ${formatCents(payment.changeCents)}`
       })
+      .concat(
+        sale.chargeAmountCents === null
+          ? []
+          : [
+              `Charge: ${formatCents(sale.chargeAmountCents)}, balance due ${formatCents(sale.chargeBalanceCents ?? 0)}`
+            ]
+      )
       .join('; '),
     sale.returnReason ?? '',
     String(sale.itemCount),

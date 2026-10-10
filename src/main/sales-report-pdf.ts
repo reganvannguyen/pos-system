@@ -104,6 +104,11 @@ function renderTransactionRow(sale: SaleSummary): string {
       payment.amountTenderedCents === null ? 'unknown' : formatCents(payment.amountTenderedCents)
     return `${type}: tendered ${tendered}, applied ${formatCents(payment.amountAppliedCents)}, change ${formatCents(payment.changeCents)}`
   })
+  if (sale.chargeAmountCents !== null) {
+    payments.push(
+      `Charge: ${formatCents(sale.chargeAmountCents)}, balance due ${formatCents(sale.chargeBalanceCents ?? 0)}`
+    )
+  }
   const paymentMethod = titleCase(sale.paymentMethod)
 
   return `<tr class="${sale.transactionType === 'return' ? 'return-row' : ''}">

@@ -2703,6 +2703,98 @@ kbd {
   color: #263238;
 }
 
+.sale-charge-details {
+  display: grid;
+  gap: 12px;
+  margin: 14px 22px 0;
+  padding: 15px 16px;
+  border: 1px solid #e1e7eb;
+  border-radius: 6px;
+  background: #f8fafb;
+}
+
+.sale-charge-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sale-charge-heading h3,
+.sale-charge-details h4 {
+  margin: 2px 0 0;
+  color: #25343d;
+  font-size: 14px;
+}
+
+.sale-charge-heading > strong {
+  color: #9a4d13;
+  font-size: 13px;
+}
+
+.sale-charge-heading > .charge-paid {
+  color: #237345;
+}
+
+.sale-charge-customer {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  color: #53616b;
+  font-size: 11px;
+}
+
+.sale-charge-customer > div,
+.sale-charge-totals {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 5px 12px;
+}
+
+.sale-charge-customer dt {
+  color: #71808a;
+}
+
+.sale-charge-customer dd {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.sale-charge-totals {
+  padding-top: 10px;
+  border-top: 1px solid #e1e7eb;
+  color: #34434d;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.sale-charge-details h4 {
+  margin-top: 2px;
+}
+
+.charge-payment-history {
+  display: grid;
+  gap: 6px;
+  margin: -5px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.charge-payment-history li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #53616b;
+  font-size: 11px;
+}
+
+.charge-payment-history strong {
+  color: #263238;
+  font-variant-numeric: tabular-nums;
+}
+
 .sale-detail-footer {
   display: flex;
   justify-content: flex-end;

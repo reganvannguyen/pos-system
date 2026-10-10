@@ -1,7 +1,8 @@
-import type { SavedTenderType, TenderInput } from '../../shared/pos-api'
+import type { ChargeCustomer, SavedTenderType, TenderInput } from '../../shared/pos-api'
 
 export interface CheckoutSession {
   tenders: TenderInput[]
+  chargeCustomer?: ChargeCustomer
 }
 
 export interface TenderSummary {
@@ -108,7 +109,8 @@ export function allocateReturnPayouts(totalCents: number, tenders: TenderInput[]
   return { valid: true, error: '', paidCents, remainingCents, changeCents: 0 }
 }
 
-export function tenderLabel(type: SavedTenderType): string {
+export function tenderLabel(type: SavedTenderType | 'charge'): string {
+  if (type === 'charge') return 'Charge'
   if (type === 'mastercard') return 'Mastercard'
   if (type === 'credit') return 'Credit'
   if (type === 'debit') return 'Debit'

@@ -41,7 +41,8 @@ const schema =
   readFileSync(
     join(process.cwd(), 'src/main/database/migrations/008_transaction_numbers.sql'),
     'utf8'
-  )
+  ) +
+  readFileSync(join(process.cwd(), 'src/main/database/migrations/009_sale_charges.sql'), 'utf8')
 
 interface SalesTestContext {
   database: Database.Database
@@ -623,6 +624,217 @@ test('records split tender amounts and summarizes cash and card applied totals',
     })
     assert.equal(report.totals.cashReceivedCents, 200)
     assert.equal(report.totals.cardReceivedCents, 800)
+  })
+})
+
+test('completes a fully charged sale and saves customer details', () => {
+  withSales(({ products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'CHARGE-FULL',
+      name: 'Charged item',
+      priceCents: 1000
+    })
+    const checkout = service.completeCheckout({
+      items: [{ productId, quantity: 1 }],
+      tenders: [],
+      chargeCustomer: {
+        name: '  Alex Customer  ',
+        companyName: 'Example Co',
+        address: '12 Main Street',
+        phoneNumber: '604-555-0100',
+        email: 'alex@example.com'
+      }
+    })
+
+    assert.equal(checkout.sale.paymentMethod, 'charge')
+    assert.equal(checkout.sale.chargeAmountCents, 1000)
+    assert.equal(checkout.sale.chargeBalanceCents, 1000)
+    assert.deepEqual(checkout.sale.charge, {
+      customer: {
+        name: 'Alex Customer',
+        companyName: 'Example Co',
+        address: '12 Main Street',
+        phoneNumber: '604-555-0100',
+        email: 'alex@example.com'
+      },
+      amountCents: 1000,
+      balanceCents: 1000,
+      payments: []
+    })
+    assert.deepEqual(checkout.sale.payments, [])
+    assert.match(serializeSalesCsv([checkout.sale]), /Charge: 10\.00, balance due 10\.00/)
+  })
+})
+
+test('charges the balance left after a partial cash payment', () => {
+  withSales(({ products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'CHARGE-SPLIT',
+      name: 'Split charge item',
+      priceCents: 1000
+    })
+    const checkout = service.completeCheckout({
+      items: [{ productId, quantity: 1 }],
+      tenders: [{ type: 'cash', amountCents: 400 }],
+      chargeCustomer: {
+        name: 'Jordan Customer',
+        companyName: '',
+        address: '',
+        phoneNumber: '',
+        email: ''
+      }
+    })
+
+    assert.equal(checkout.sale.paymentMethod, 'split')
+    assert.equal(checkout.sale.chargeAmountCents, 600)
+    assert.equal(checkout.sale.chargeBalanceCents, 600)
+    assert.equal(checkout.sale.payments[0]?.amountAppliedCents, 400)
+    assert.match(
+      serializeSalesCsv([checkout.sale]),
+      /Cash: tendered 4\.00, applied 4\.00, change 0\.00; Charge: 6\.00, balance due 6\.00/
+    )
+  })
+})
+
+test('records partial and final charge repayments and rejects overpayment', () => {
+  withSales(({ products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'CHARGE-REPAY',
+      name: 'Repayment item',
+      priceCents: 1000
+    })
+    const checkout = service.completeCheckout({
+      items: [{ productId, quantity: 1 }],
+      tenders: [],
+      chargeCustomer: {
+        name: 'Taylor Customer',
+        companyName: '',
+        address: '',
+        phoneNumber: '',
+        email: ''
+      }
+    })
+    const partial = service.recordChargePayment({
+      saleId: checkout.sale.id,
+      type: 'cash',
+      amountCents: 250
+    })
+    assert.equal(partial.charge?.balanceCents, 750)
+    assert.equal(partial.charge?.payments.length, 1)
+
+    assertSaleError(
+      toSalesResult(() =>
+        service.recordChargePayment({
+          saleId: checkout.sale.id,
+          type: 'debit',
+          amountCents: 751
+        })
+      ),
+      'invalid-input'
+    )
+
+    const paid = service.recordChargePayment({
+      saleId: checkout.sale.id,
+      type: 'credit',
+      amountCents: 750
+    })
+    assert.equal(paid.charge?.balanceCents, 0)
+    assert.deepEqual(
+      paid.charge?.payments.map(({ type, amountCents }) => [type, amountCents]),
+      [
+        ['cash', 250],
+        ['credit', 750]
+      ]
+    )
+    assert.equal(paid.chargeBalanceCents, 0)
+  })
+})
+
+test('counts charge repayments in reports on the date they are received', () => {
+  withSales(({ database, products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'CHARGE-REPORT',
+      name: 'Report item',
+      priceCents: 1000
+    })
+    const checkout = service.completeCheckout({
+      items: [{ productId, quantity: 1 }],
+      tenders: [],
+      chargeCustomer: {
+        name: 'Morgan Customer',
+        companyName: '',
+        address: '',
+        phoneNumber: '',
+        email: ''
+      }
+    })
+    setSaleTimestamp(database, checkout.sale.id, '2020-01-01 12:00:00')
+    service.recordChargePayment({
+      saleId: checkout.sale.id,
+      type: 'cash',
+      amountCents: 300
+    })
+    database.prepare('UPDATE charge_payments SET created_at = ?').run('2099-06-15 12:00:00')
+
+    const saleYear = service.report({ type: 'year', year: 2020 })
+    const repaymentYear = service.report({ type: 'year', year: 2099 })
+    assert.equal(saleYear.totals.grossSalesTotalCents, 1000)
+    assert.equal(saleYear.totals.cashReceivedCents, 0)
+    assert.equal(repaymentYear.totals.transactionCount, 0)
+    assert.equal(repaymentYear.totals.cashReceivedCents, 300)
+  })
+})
+
+test('validates charge customer details and requires a real remaining balance', () => {
+  withSales(({ products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'CHARGE-VALIDATION',
+      name: 'Validation item',
+      priceCents: 1000
+    })
+    assertSaleError(
+      toSalesResult(() =>
+        service.completeCheckout({
+          items: [{ productId, quantity: 1 }],
+          tenders: [],
+          chargeCustomer: {
+            name: '   ',
+            companyName: '',
+            address: '',
+            phoneNumber: '',
+            email: ''
+          }
+        })
+      ),
+      'invalid-input'
+    )
+    assertSaleError(
+      toSalesResult(() =>
+        service.completeCheckout({
+          items: [{ productId, quantity: 1 }],
+          tenders: [{ type: 'cash', amountCents: 1000 }],
+          chargeCustomer: {
+            name: 'Alex Customer',
+            companyName: '',
+            address: '',
+            phoneNumber: '',
+            email: ''
+          }
+        })
+      ),
+      'invalid-input'
+    )
+    const settled = completeWithPayment(service, [{ productId, quantity: 1 }])
+    assertSaleError(
+      toSalesResult(() =>
+        service.recordChargePayment({
+          saleId: settled.sale.id,
+          type: 'cash',
+          amountCents: 100
+        })
+      ),
+      'invalid-input'
+    )
   })
 })
 
@@ -1285,6 +1497,8 @@ test('CSV quotes fields containing commas, quotes, and line breaks', () => {
       taxCents: 0,
       totalCents: 100,
       paymentMethod: 'cash',
+      chargeAmountCents: null,
+      chargeBalanceCents: null,
       payments: [
         { type: 'cash', amountTenderedCents: 100, amountAppliedCents: 100, changeCents: 0 }
       ],
@@ -1473,6 +1687,9 @@ test('migration backfills historical payment types and original item prices', ()
       )
     )
     backfillTransactionNumbers(database)
+    database.exec(
+      readFileSync(join(process.cwd(), 'src/main/database/migrations/009_sale_charges.sql'), 'utf8')
+    )
     const historicalSales = createSalesService(createSalesRepository(database))
     assert.equal(historicalSales.getById(zeroSale).paymentMethod, 'cash')
     const migratedSales = createSalesService(createSalesRepository(database))

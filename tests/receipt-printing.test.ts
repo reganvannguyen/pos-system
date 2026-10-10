@@ -13,7 +13,7 @@ import {
   toPrinterOption,
   toReceiptResult
 } from '../src/main/receipt-service'
-import { renderReceiptPreviewHtml } from '../src/shared/receipt-html'
+import { renderReceiptHtml, renderReceiptPreviewHtml } from '../src/shared/receipt-html'
 import { createSalesService } from '../src/main/sales-service'
 
 const schema =
@@ -42,7 +42,8 @@ const schema =
   readFileSync(
     join(process.cwd(), 'src/main/database/migrations/008_transaction_numbers.sql'),
     'utf8'
-  )
+  ) +
+  readFileSync(join(process.cwd(), 'src/main/database/migrations/009_sale_charges.sql'), 'utf8')
 
 async function withReceiptService(
   run: (context: {
@@ -192,6 +193,43 @@ test('live receipt preview renders draft details in the shared 58 mm invoice tem
   assert.match(html, /Payment type/)
   assert.match(html, /GST\/HST #123456789RT0001/)
   assert.match(html, /rainbow\.example/)
+})
+
+test('charged receipt prints escaped customer details and the current balance due', () => {
+  const html = renderReceiptHtml(
+    {
+      transactionNumber: '20261010-0001',
+      createdAt: '2026-10-10 12:00:00',
+      items: [],
+      subtotalCents: 1000,
+      taxes: [],
+      taxCents: 0,
+      totalCents: 1000,
+      payments: [],
+      charge: {
+        customer: {
+          name: '<Alex Customer>',
+          companyName: 'Example Co',
+          address: '12 Main Street',
+          phoneNumber: '604-555-0100',
+          email: 'alex@example.com'
+        },
+        amountCents: 1000,
+        balanceCents: 650
+      }
+    },
+    businessSettings('Corner Shop')
+  )
+
+  assert.match(html, /CHARGED TO/)
+  assert.match(html, /&lt;Alex Customer&gt;/)
+  assert.match(html, /Example Co/)
+  assert.match(html, /12 Main Street/)
+  assert.match(html, /alex@example\.com/)
+  assert.match(html, /Amount charged/)
+  assert.match(html, /Balance due/)
+  assert.match(html, /\$6\.50/)
+  assert.match(html, /Charge/)
 })
 
 test('lists printers by friendly name and stores the operating-system name', async () => {

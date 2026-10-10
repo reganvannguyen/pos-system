@@ -16,8 +16,8 @@ interface ReceiptDialogProps {
 function ReceiptDialog({ sale, onClose }: ReceiptDialogProps): React.JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const [action, setAction] = useState<ReceiptAction>('choose')
-  const [email, setEmail] = useState('')
-  const [phone, setPhone] = useState('')
+  const [email, setEmail] = useState(sale.charge?.customer.email ?? '')
+  const [phone, setPhone] = useState(sale.charge?.customer.phoneNumber ?? '')
   const [working, setWorking] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')

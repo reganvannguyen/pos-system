@@ -13,6 +13,8 @@ function sale(id: number, createdAt: string): SaleSummary {
     taxCents: 0,
     totalCents: 100,
     paymentMethod: 'cash',
+    chargeAmountCents: null,
+    chargeBalanceCents: null,
     payments: [],
     createdAt,
     itemCount: 1

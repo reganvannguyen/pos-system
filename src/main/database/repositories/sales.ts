@@ -1,7 +1,9 @@
-import type { CheckoutItem, TenderInput } from '../../../shared/pos-api'
+import type { ChargeCustomer, TenderInput, CheckoutItem } from '../../../shared/pos-api'
 import type {
+  ChargePaymentRecord,
   PosDatabase,
   ProductRecord,
+  SaleChargeRecord,
   SaleItemRecord,
   SalePaymentRecord,
   SaleRecord
@@ -49,6 +51,7 @@ export interface SaleTaxBreakdownRecord {
 export interface SaleSummaryRecord extends SaleRecord {
   item_count: number
   payments: SalePaymentRecord[]
+  charge: SaleChargeRecord | null
 }
 
 export interface SaleDetailRecord extends SaleSummaryRecord {
@@ -76,6 +79,10 @@ interface ProductLineSummaryRecord {
   line_total_cents: number
   transaction_type: 'sale' | 'return'
   created_at: string
+}
+
+export interface ChargePaymentSummaryRecord extends ChargePaymentRecord {
+  sale_id: number
 }
 
 export type SalesRepositoryErrorCode =
@@ -174,6 +181,31 @@ export function createSalesRepository(
        (sale_id, payment_type, amount_tendered_cents, amount_applied_cents, change_cents)
      VALUES (@saleId, @type, @amountTenderedCents, @amountAppliedCents, @changeCents)`
   )
+  const insertSaleChargeStatement = database.prepare(
+    `INSERT INTO sale_charges
+       (sale_id, customer_name, company_name, address, phone_number, email, amount_cents)
+     VALUES (@saleId, @name, @companyName, @address, @phoneNumber, @email, @amountCents)`
+  )
+  const insertChargePaymentStatement = database.prepare(
+    `INSERT INTO charge_payments (charge_id, payment_type, amount_cents, created_at)
+     VALUES (@chargeId, @type, @amountCents, @createdAt)`
+  )
+  const getChargeBySaleIdStatement = database.prepare(
+    `SELECT id, sale_id, customer_name, company_name, address, phone_number, email,
+            amount_cents, amount_cents - COALESCE((
+              SELECT SUM(amount_cents) FROM charge_payments WHERE charge_id = sale_charges.id
+            ), 0) AS balance_cents
+     FROM sale_charges WHERE sale_id = ?`
+  )
+  const listChargePaymentsInRangeStatement = database.prepare(
+    `SELECT sale_charges.sale_id, charge_payments.id, charge_payments.charge_id,
+            charge_payments.payment_type, charge_payments.amount_cents, charge_payments.created_at
+     FROM charge_payments
+     JOIN sale_charges ON sale_charges.id = charge_payments.charge_id
+     WHERE charge_payments.created_at >= @startInclusive
+       AND charge_payments.created_at < @endExclusive
+     ORDER BY charge_payments.created_at, charge_payments.id`
+  )
   const decrementStockStatement = database.prepare(
     `UPDATE products
      SET stock_quantity = stock_quantity - @quantity,
@@ -214,7 +246,61 @@ export function createSalesRepository(
         paymentsBySaleId.set(payment.sale_id, salePayments)
       }
     }
-    return rows.map((row) => ({ ...row, payments: paymentsBySaleId.get(row.id) ?? [] }))
+    const withPayments = rows.map((row) => ({
+      ...row,
+      payments: paymentsBySaleId.get(row.id) ?? []
+    }))
+    const chargesBySaleId = new Map<number, SaleChargeRecord>()
+    const chargeIds: number[] = []
+    const chargeRowsById = new Map<number, Omit<SaleChargeRecord, 'payments'>>()
+    for (let start = 0; start < ids.length; start += chunkSize) {
+      const chunk = ids.slice(start, start + chunkSize)
+      const placeholders = chunk.map(() => '?').join(', ')
+      const charges = database
+        .prepare(
+          `SELECT sale_charges.id, sale_charges.sale_id, sale_charges.customer_name,
+                  sale_charges.company_name, sale_charges.address, sale_charges.phone_number,
+                  sale_charges.email, sale_charges.amount_cents,
+                  sale_charges.amount_cents - COALESCE(SUM(charge_payments.amount_cents), 0) AS balance_cents
+           FROM sale_charges
+           LEFT JOIN charge_payments ON charge_payments.charge_id = sale_charges.id
+           WHERE sale_charges.sale_id IN (${placeholders})
+           GROUP BY sale_charges.id
+           ORDER BY sale_charges.sale_id`
+        )
+        .all(...chunk) as Array<Omit<SaleChargeRecord, 'payments'>>
+      for (const charge of charges) {
+        chargeIds.push(charge.id)
+        chargeRowsById.set(charge.id, charge)
+      }
+    }
+    const chargePaymentsByChargeId = new Map<number, ChargePaymentRecord[]>()
+    for (let start = 0; start < chargeIds.length; start += chunkSize) {
+      const chunk = chargeIds.slice(start, start + chunkSize)
+      const placeholders = chunk.map(() => '?').join(', ')
+      const chargePayments = database
+        .prepare(
+          `SELECT id, charge_id, payment_type, amount_cents, created_at
+           FROM charge_payments WHERE charge_id IN (${placeholders})
+           ORDER BY charge_id, id`
+        )
+        .all(...chunk) as ChargePaymentRecord[]
+      for (const payment of chargePayments) {
+        const payments = chargePaymentsByChargeId.get(payment.charge_id) ?? []
+        payments.push(payment)
+        chargePaymentsByChargeId.set(payment.charge_id, payments)
+      }
+    }
+    for (const charge of chargeRowsById.values()) {
+      chargesBySaleId.set(charge.sale_id, {
+        ...charge,
+        payments: chargePaymentsByChargeId.get(charge.id) ?? []
+      })
+    }
+    return withPayments.map((row) => ({
+      ...row,
+      charge: chargesBySaleId.get(row.id) ?? null
+    }))
   }
 
   function getDetail(id: number): SaleDetailRecord | undefined {
@@ -336,9 +422,28 @@ export function createSalesRepository(
   }
 
   const completeTransaction = database.transaction(
-    (input: { items: SaleLineInput[]; tenders: TenderInput[] }): SaleDetailRecord => {
+    (input: {
+      items: SaleLineInput[]
+      tenders: TenderInput[]
+      chargeCustomer?: ChargeCustomer
+    }): SaleDetailRecord => {
       const quote = resolveQuote(input.items)
-      const allocations = allocatePayments(quote.total_cents, input.tenders)
+      const allocations = allocatePayments(
+        quote.total_cents,
+        input.tenders,
+        Boolean(input.chargeCustomer)
+      )
+      const amountPaidCents = allocations.reduce(
+        (total, payment) => total + payment.amountAppliedCents,
+        0
+      )
+      const chargeAmountCents = quote.total_cents - amountPaidCents
+      if (input.chargeCustomer && chargeAmountCents <= 0) {
+        throw new SalesRepositoryError(
+          'invalid-input',
+          'A charge must cover a remaining balance above $0.00.'
+        )
+      }
       const paymentMethod =
         input.tenders.length === 0 || input.tenders.every((tender) => tender.type === 'cash')
           ? 'cash'
@@ -404,6 +509,14 @@ export function createSalesRepository(
           amountTenderedCents: payment.amountTenderedCents,
           amountAppliedCents: payment.amountAppliedCents,
           changeCents: payment.changeCents
+        })
+      }
+
+      if (input.chargeCustomer) {
+        insertSaleChargeStatement.run({
+          saleId,
+          ...input.chargeCustomer,
+          amountCents: chargeAmountCents
         })
       }
 
@@ -507,6 +620,41 @@ export function createSalesRepository(
     }
   )
 
+  const recordChargePayment = database.transaction(
+    (input: { saleId: number; type: 'cash' | 'debit' | 'credit'; amountCents: number }) => {
+      if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0) {
+        throw new SalesRepositoryError('invalid-input', 'Payment amounts must be above zero.')
+      }
+      const charge = getChargeBySaleIdStatement.get(input.saleId) as
+        Omit<SaleChargeRecord, 'payments'> | undefined
+      if (!charge) {
+        const sale = getSaleStatement.get(input.saleId) as SaleRecord | undefined
+        if (!sale) {
+          throw new SalesRepositoryError('not-found', 'This transaction could not be found.')
+        }
+        throw new SalesRepositoryError(
+          'invalid-input',
+          'This sale does not have an outstanding charge.'
+        )
+      }
+      if (input.amountCents > charge.balance_cents) {
+        throw new SalesRepositoryError(
+          'invalid-input',
+          'The payment cannot be greater than the outstanding charge balance.'
+        )
+      }
+      insertChargePaymentStatement.run({
+        chargeId: charge.id,
+        type: input.type,
+        amountCents: input.amountCents,
+        createdAt: new Date().toISOString().slice(0, 19).replace('T', ' ')
+      })
+      const detail = getDetail(input.saleId)
+      if (!detail) throw new Error('The transaction was not available after recording payment.')
+      return detail
+    }
+  )
+
   return {
     quote(items: SaleLineInput[]): SaleQuoteRecord {
       if (items.length === 0) throw new SalesRepositoryError('invalid-input', 'The cart is empty.')
@@ -517,10 +665,21 @@ export function createSalesRepository(
         throw new SalesRepositoryError('invalid-input', 'Add at least one product to the return.')
       return resolveReturnQuote(items)
     },
-    completeCheckout(input: { items: SaleLineInput[]; tenders: TenderInput[] }) {
+    completeCheckout(input: {
+      items: SaleLineInput[]
+      tenders: TenderInput[]
+      chargeCustomer?: ChargeCustomer
+    }) {
       if (input.items.length === 0)
         throw new SalesRepositoryError('invalid-input', 'The cart is empty.')
       return completeTransaction.immediate(input)
+    },
+    recordChargePayment(input: {
+      saleId: number
+      type: 'cash' | 'debit' | 'credit'
+      amountCents: number
+    }) {
+      return recordChargePayment.immediate(input)
     },
     completeReturn(input: { items: ReturnLineInput[]; reason: string; tenders: TenderInput[] }) {
       if (input.items.length === 0)
@@ -539,6 +698,15 @@ export function createSalesRepository(
         SaleRecord & { item_count: number }
       >
       return attachPayments(rows)
+    },
+    chargePaymentsInRange(
+      startInclusive: string,
+      endExclusive: string
+    ): ChargePaymentSummaryRecord[] {
+      return listChargePaymentsInRangeStatement.all({
+        startInclusive,
+        endExclusive
+      }) as ChargePaymentSummaryRecord[]
     },
     productTotalsInRange(
       startInclusive: string,
@@ -657,7 +825,8 @@ function localDateKey(createdAt: string): string {
 
 function allocatePayments(
   totalCents: number,
-  tenders: TenderInput[]
+  tenders: TenderInput[],
+  allowRemaining = false
 ): Array<{
   type: TenderInput['type']
   amountTenderedCents: number
@@ -697,7 +866,7 @@ function allocatePayments(
     remaining -= amountAppliedCents
   }
 
-  if (remaining > 0) {
+  if (remaining > 0 && !allowRemaining) {
     throw new SalesRepositoryError(
       'insufficient-payment',
       'Payments do not cover the sale total. Add another payment to continue.'

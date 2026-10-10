@@ -6,6 +6,7 @@ import businessEmail from './migrations/005_business_email.sql?raw'
 import receiptBusinessDetails from './migrations/006_receipt_business_details.sql?raw'
 import standaloneReturns from './migrations/007_standalone_returns.sql?raw'
 import transactionNumbers from './migrations/008_transaction_numbers.sql?raw'
+import saleCharges from './migrations/009_sale_charges.sql?raw'
 import { backfillTransactionNumbers } from './transaction-numbers'
 import type { PosDatabase } from './types'
 
@@ -23,7 +24,8 @@ const migrations: Migration[] = [
   { version: 5, sql: businessEmail },
   { version: 6, sql: receiptBusinessDetails },
   { version: 7, sql: standaloneReturns },
-  { version: 8, sql: transactionNumbers, afterSql: backfillTransactionNumbers }
+  { version: 8, sql: transactionNumbers, afterSql: backfillTransactionNumbers },
+  { version: 9, sql: saleCharges }
 ]
 
 export function runMigrations(database: PosDatabase): void {

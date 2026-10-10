@@ -1,6 +1,8 @@
 import type {
   CheckoutItem,
   CheckoutQuote,
+  ChargeCustomer,
+  ChargePayment,
   DailyProductSummary,
   ReturnItemInput,
   ReturnQuote,
@@ -50,9 +52,36 @@ export function createSalesService(repository: SalesRepository) {
       }
       const sale = repository.completeCheckout({
         items: parseItems(value.items),
-        tenders: parseTenders(value.tenders)
+        tenders: parseTenders(value.tenders),
+        ...(value.chargeCustomer !== undefined && {
+          chargeCustomer: parseChargeCustomer(value.chargeCustomer)
+        })
       })
       return { sale: toSaleDetail(sale) }
+    },
+
+    recordChargePayment(value: unknown): SaleDetail {
+      if (!isRecord(value)) {
+        throw new SalesServiceError('invalid-input', 'Enter valid charge payment details.')
+      }
+      const saleId = parseId(value.saleId)
+      if (value.type !== 'cash' && value.type !== 'debit' && value.type !== 'credit') {
+        throw new SalesServiceError('invalid-input', 'Choose Cash, Debit, or Credit.')
+      }
+      if (
+        typeof value.amountCents !== 'number' ||
+        !Number.isSafeInteger(value.amountCents) ||
+        value.amountCents <= 0
+      ) {
+        throw new SalesServiceError('invalid-input', 'Payment amounts must be above zero.')
+      }
+      return toSaleDetail(
+        repository.recordChargePayment({
+          saleId,
+          type: value.type,
+          amountCents: value.amountCents
+        })
+      )
     },
 
     quoteReturn(value: unknown): ReturnQuote {
@@ -120,6 +149,15 @@ export function createSalesService(repository: SalesRepository) {
             else creditReceived += BigInt(payment.amount_applied_cents)
           }
         }
+      }
+
+      for (const payment of repository.chargePaymentsInRange(
+        period.startInclusive,
+        period.endExclusive
+      )) {
+        if (payment.payment_type === 'cash') cashReceived += BigInt(payment.amount_cents)
+        else if (payment.payment_type === 'debit') debitReceived += BigInt(payment.amount_cents)
+        else creditReceived += BigInt(payment.amount_cents)
       }
 
       const cardReceived = debitReceived + creditReceived
@@ -364,6 +402,47 @@ function parseTenders(value: unknown, isReturn = false): TenderInput[] {
   })
 }
 
+function parseChargeCustomer(value: unknown): ChargeCustomer {
+  if (!isRecord(value)) {
+    throw new SalesServiceError('invalid-input', 'Enter customer details for this charge.')
+  }
+  const name = parseContactField(value.name, 'Customer name', 200, true)
+  const companyName = parseContactField(value.companyName, 'Company name', 200)
+  const address = parseContactField(value.address, 'Address', 500)
+  const phoneNumber = parseContactField(value.phoneNumber, 'Phone number', 50)
+  const email = parseContactField(value.email, 'Email', 254)
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new SalesServiceError('invalid-input', 'Enter a valid customer email address.')
+  }
+  return { name, companyName, address, phoneNumber, email }
+}
+
+function parseContactField(
+  value: unknown,
+  label: string,
+  maxLength: number,
+  required = false
+): string {
+  if (value === undefined || value === null) {
+    if (!required) return ''
+    throw new SalesServiceError('invalid-input', `Enter a ${label.toLowerCase()}.`)
+  }
+  if (typeof value !== 'string') {
+    throw new SalesServiceError('invalid-input', `Enter a valid ${label.toLowerCase()}.`)
+  }
+  const trimmed = value.trim()
+  if (required && !trimmed) {
+    throw new SalesServiceError('invalid-input', `Enter a ${label.toLowerCase()}.`)
+  }
+  if (trimmed.length > maxLength) {
+    throw new SalesServiceError(
+      'invalid-input',
+      `${label} must be ${maxLength} characters or fewer.`
+    )
+  }
+  return trimmed
+}
+
 function parseId(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
     throw new SalesServiceError('invalid-input', 'Choose a valid transaction.')
@@ -426,16 +505,20 @@ function toSaleSummary(value: SaleSummaryRecord): SaleSummary {
     if (payment.payment_type === 'cash') cashApplied += BigInt(payment.amount_applied_cents)
     else cardApplied += BigInt(payment.amount_applied_cents)
   }
+  const charged = value.charge !== null
+  const methodCount = Number(cashApplied > 0n) + Number(cardApplied > 0n) + Number(charged)
   const paymentMethod =
-    cashApplied > 0n && cardApplied > 0n
+    methodCount > 1
       ? 'split'
       : cashApplied > 0n
         ? 'cash'
         : cardApplied > 0n
           ? 'card'
-          : value.payments.length > 0
-            ? value.payment_method
-            : 'none'
+          : charged
+            ? 'charge'
+            : value.payments.length > 0
+              ? value.payment_method
+              : 'none'
   const isReturn = value.transaction_type === 'return'
   return {
     id: value.id,
@@ -446,6 +529,8 @@ function toSaleSummary(value: SaleSummaryRecord): SaleSummary {
     taxCents: signedAmount(value.tax_cents, isReturn),
     totalCents: signedAmount(value.total_cents, isReturn),
     paymentMethod,
+    chargeAmountCents: value.charge?.amount_cents ?? null,
+    chargeBalanceCents: value.charge?.balance_cents ?? null,
     payments: value.payments.map((payment) => ({
       type: payment.payment_type,
       amountTenderedCents:
@@ -490,7 +575,25 @@ function toSaleDetail(value: SaleDetailRecord): SaleDetail {
       name: tax.tax_name,
       rateBasisPoints: tax.rate_basis_points,
       taxCents: signedAmount(tax.tax_cents, isReturn)
-    }))
+    })),
+    charge: value.charge
+      ? {
+          customer: {
+            name: value.charge.customer_name,
+            companyName: value.charge.company_name,
+            address: value.charge.address,
+            phoneNumber: value.charge.phone_number,
+            email: value.charge.email
+          },
+          amountCents: value.charge.amount_cents,
+          balanceCents: value.charge.balance_cents,
+          payments: value.charge.payments.map((payment): ChargePayment => ({
+            type: payment.payment_type,
+            amountCents: payment.amount_cents,
+            createdAt: payment.created_at
+          }))
+        }
+      : null
   }
 }
 

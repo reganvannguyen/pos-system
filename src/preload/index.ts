@@ -18,6 +18,8 @@ const posApi: PosApi = {
     completeCheckout: (request) => ipcRenderer.invoke(IPC_CHANNELS.salesCompleteCheckout, request),
     quoteReturn: (request) => ipcRenderer.invoke(IPC_CHANNELS.salesQuoteReturn, request),
     completeReturn: (request) => ipcRenderer.invoke(IPC_CHANNELS.salesCompleteReturn, request),
+    recordChargePayment: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.salesRecordChargePayment, request),
     listRecent: () => ipcRenderer.invoke(IPC_CHANNELS.salesListRecent),
     report: (period) => ipcRenderer.invoke(IPC_CHANNELS.salesReport, period),
     productsForDay: (date) => ipcRenderer.invoke(IPC_CHANNELS.salesProductsForDay, date),

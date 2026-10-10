@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, FormEvent, SetStateAction } from 'react'
 import type {
   CheckoutQuote,
+  ChargeCustomer,
   ReturnQuote,
   SaleDetail,
   TenderInput,
@@ -39,6 +40,7 @@ const currencyFormatter = new Intl.NumberFormat('en-CA', {
   style: 'currency',
   currency: 'CAD'
 })
+const emptyTenders: TenderInput[] = []
 
 interface PosScreenProps {
   cart: CartLine[]
@@ -81,6 +83,7 @@ function PosScreen({
   const [quoteState, setQuoteState] = useState<QuoteState | null>(null)
   const [quoteRetryKey, setQuoteRetryKey] = useState(0)
   const [paymentMethodPickerOpen, setPaymentMethodPickerOpen] = useState(false)
+  const [chargeCustomerDialogOpen, setChargeCustomerDialogOpen] = useState(false)
   const [tenderDialogType, setTenderDialogType] = useState<TenderType | null>(null)
   const [paymentActive, setPaymentActive] = useState(false)
   const [priceDialogLine, setPriceDialogLine] = useState<QuoteItem | null>(null)
@@ -113,15 +116,23 @@ function PosScreen({
       : ''
   const quoteLoading = cart.length > 0 && !quoteMatchesCurrentCart && !returnReasonMissing
   const displayLines = quote?.items ?? cart
-  const tenders = checkoutSession?.tenders ?? []
+  const tenders = checkoutSession?.tenders ?? emptyTenders
+  const chargeCustomer = checkoutSession?.chargeCustomer ?? null
   const selectedCartLine =
     selectedCartLineIndex === null ? null : (cart[selectedCartLineIndex] ?? null)
   const paymentTargetCents = quote ? Math.abs(quote.totalCents) : 0
-  const tenderSummary = quote
-    ? mode === 'return'
+  const tenderSummary = useMemo(() => {
+    if (!quote) return null
+    return mode === 'return'
       ? allocateReturnPayouts(paymentTargetCents, tenders)
       : allocateTenders(paymentTargetCents, tenders)
-    : null
+  }, [mode, paymentTargetCents, quote, tenders])
+  const tenderSummaryInvalid = tenderSummary?.valid === false
+  const tenderRemainingCents = tenderSummary?.remainingCents
+  const hasChargeCustomer = chargeCustomer !== null
+  const hasCheckoutSession = checkoutSession !== null
+  const hasPriceDialogLine = priceDialogLine !== null
+  const chargeAmountCents = chargeCustomer ? (tenderSummary?.remainingCents ?? 0) : 0
   const sessionNeedsResume = checkoutSession !== null && !paymentActive
   const cartLocked =
     savingSale || checkoutSession !== null || paymentActive || lineSelectionMode !== null
@@ -210,6 +221,7 @@ function PosScreen({
   useEffect(() => {
     if (
       !paymentMethodPickerOpen &&
+      !chargeCustomerDialogOpen &&
       !tenderDialogType &&
       !priceDialogLine &&
       !confirmTransaction &&
@@ -221,6 +233,7 @@ function PosScreen({
     }
   }, [
     paymentMethodPickerOpen,
+    chargeCustomerDialogOpen,
     tenderDialogType,
     priceDialogLine,
     confirmTransaction,
@@ -233,10 +246,11 @@ function PosScreen({
     (type: TenderType): void => {
       if (
         checkoutDisabled ||
-        tenderSummary?.valid === false ||
-        tenderSummary?.remainingCents === 0 ||
+        hasChargeCustomer ||
+        tenderSummaryInvalid ||
+        tenderRemainingCents === 0 ||
         tenderDialogType ||
-        priceDialogLine ||
+        hasPriceDialogLine ||
         confirmTransaction
       )
         return
@@ -244,33 +258,52 @@ function PosScreen({
       setPaymentActive(true)
       setTenderDialogType(type)
     },
-    [checkoutDisabled, confirmTransaction, priceDialogLine, tenderDialogType, tenderSummary]
+    [
+      checkoutDisabled,
+      hasChargeCustomer,
+      tenderSummaryInvalid,
+      tenderRemainingCents,
+      confirmTransaction,
+      hasPriceDialogLine,
+      tenderDialogType
+    ]
   )
 
   const openTenderPicker = useCallback((): void => {
     if (
       checkoutDisabled ||
-      tenderSummary?.valid === false ||
-      tenderSummary?.remainingCents === 0 ||
+      hasChargeCustomer ||
+      tenderSummaryInvalid ||
+      tenderRemainingCents === 0 ||
       paymentMethodPickerOpen ||
       tenderDialogType ||
-      priceDialogLine ||
+      hasPriceDialogLine ||
       confirmTransaction
     )
       return
     setCheckoutError('')
-    if (checkoutSession && !paymentActive) setPaymentActive(true)
+    if (hasCheckoutSession && !paymentActive) setPaymentActive(true)
     setPaymentMethodPickerOpen(true)
   }, [
     checkoutDisabled,
-    checkoutSession,
+    hasChargeCustomer,
+    hasCheckoutSession,
+    tenderSummaryInvalid,
+    tenderRemainingCents,
     confirmTransaction,
     paymentActive,
     paymentMethodPickerOpen,
-    priceDialogLine,
-    tenderDialogType,
-    tenderSummary
+    hasPriceDialogLine,
+    tenderDialogType
   ])
+
+  function beginChargeEntry(): void {
+    if (mode !== 'sale' || checkoutDisabled || tenderSummary?.valid === false) return
+    if (tenderSummary?.remainingCents === 0 || confirmTransaction || priceDialogLine) return
+    setCheckoutError('')
+    setPaymentActive(true)
+    setChargeCustomerDialogOpen(true)
+  }
 
   const changeRegisterMode = useCallback(
     (nextMode: 'sale' | 'return'): void => {
@@ -288,6 +321,7 @@ function PosScreen({
       setPaymentActive(false)
       setTenderDialogType(null)
       setPaymentMethodPickerOpen(false)
+      setChargeCustomerDialogOpen(false)
       setPriceDialogLine(null)
       setConfirmTransaction(false)
       setReturnReason('')
@@ -574,6 +608,20 @@ function PosScreen({
     return null
   }
 
+  function stageCharge(customer: ChargeCustomer): string | null {
+    const remainingCents = tenderSummary?.remainingCents
+    if (!quote || mode !== 'sale' || remainingCents === undefined || remainingCents <= 0) {
+      return 'There is no remaining balance to charge.'
+    }
+    if (!tenderSummary?.valid) return tenderSummary?.error || 'Correct the staged payments first.'
+    setCheckoutSession({ tenders, chargeCustomer: customer })
+    setPaymentActive(true)
+    setChargeCustomerDialogOpen(false)
+    setCheckoutError('')
+    setConfirmTransaction(true)
+    return null
+  }
+
   function cancelTenderPicker(): void {
     setPaymentMethodPickerOpen(false)
     window.requestAnimationFrame(() => addPaymentButtonRef.current?.focus())
@@ -585,6 +633,12 @@ function PosScreen({
     window.requestAnimationFrame(() => addPaymentButtonRef.current?.focus())
   }
 
+  function cancelChargeEntry(): void {
+    setChargeCustomerDialogOpen(false)
+    if (!checkoutSession) setPaymentActive(false)
+    window.requestAnimationFrame(() => addPaymentButtonRef.current?.focus())
+  }
+
   function cancelTransactionConfirmation(): void {
     setConfirmTransaction(false)
     window.requestAnimationFrame(() => completeTransactionButtonRef.current?.focus())
@@ -592,7 +646,13 @@ function PosScreen({
 
   function removeTender(index: number): void {
     const nextTenders = tenders.filter((_, tenderIndex) => tenderIndex !== index)
-    setCheckoutSession(nextTenders.length > 0 ? { tenders: nextTenders } : null)
+    setCheckoutSession(
+      chargeCustomer
+        ? { tenders: nextTenders, chargeCustomer }
+        : nextTenders.length > 0
+          ? { tenders: nextTenders }
+          : null
+    )
     setCheckoutError('')
     const nextSummary = quote
       ? mode === 'return'
@@ -610,7 +670,7 @@ function PosScreen({
 
   function discardPaymentSession(): void {
     if (
-      tenders.length > 0 &&
+      (tenders.length > 0 || chargeCustomer) &&
       !window.confirm('Discard all staged payments? The cart will remain.')
     ) {
       return
@@ -624,6 +684,7 @@ function PosScreen({
 
   function resumePayment(): void {
     setPaymentActive(true)
+    if (checkoutSession?.chargeCustomer) setConfirmTransaction(true)
     window.requestAnimationFrame(() => addPaymentButtonRef.current?.focus())
   }
 
@@ -637,7 +698,14 @@ function PosScreen({
   }
 
   async function completeTransaction(): Promise<void> {
-    if (!quote || !tenderSummary?.valid || tenderSummary.remainingCents !== 0 || savingSale) return
+    const hasCharge = mode === 'sale' && chargeCustomer !== null
+    if (
+      !quote ||
+      !tenderSummary?.valid ||
+      (tenderSummary.remainingCents !== 0 && !hasCharge) ||
+      savingSale
+    )
+      return
     setSavingSale(true)
     setCheckoutError('')
 
@@ -667,7 +735,8 @@ function PosScreen({
             quantity,
             ...(priceOverride && { priceOverride })
           })),
-          tenders
+          tenders,
+          ...(chargeCustomer && { chargeCustomer })
         })
         if (!result.ok) {
           setCheckoutError(result.error.message)
@@ -1113,12 +1182,30 @@ function PosScreen({
             <div className="checkout-payment-session">
               <div className="payment-session-totals" aria-live="polite">
                 <div className="payment-total-card">
-                  <span>{mode === 'return' ? 'Total payout' : 'Total tendered'}</span>
+                  <span>
+                    {mode === 'return'
+                      ? 'Total payout'
+                      : chargeCustomer
+                        ? 'Paid now'
+                        : 'Total tendered'}
+                  </span>
                   <strong>{amount(totalTenderedCents(tenders))}</strong>
                 </div>
                 <div className="payment-total-card is-remaining">
-                  <span>{mode === 'return' ? 'Remaining to refund' : 'Remaining'}</span>
-                  <strong>{amount(tenderSummary?.remainingCents ?? total ?? 0)}</strong>
+                  <span>
+                    {mode === 'return'
+                      ? 'Remaining to refund'
+                      : chargeCustomer
+                        ? 'On charge'
+                        : 'Remaining'}
+                  </span>
+                  <strong>
+                    {amount(
+                      chargeCustomer
+                        ? chargeAmountCents
+                        : (tenderSummary?.remainingCents ?? total ?? 0)
+                    )}
+                  </strong>
                 </div>
                 {mode === 'sale' && Boolean(tenderSummary?.changeCents) && (
                   <div className="payment-total-change">
@@ -1161,6 +1248,28 @@ function PosScreen({
                   })}
                 </ul>
               )}
+              {chargeCustomer && (
+                <ul className="staged-payment-list" aria-label="Charge details">
+                  <li>
+                    <span>
+                      <strong>Charge · {chargeCustomer.name}</strong>
+                      <small>{amount(chargeAmountCents)} due after this sale</small>
+                    </span>
+                    <button
+                      className="text-button danger-text"
+                      type="button"
+                      onClick={() => {
+                        setCheckoutSession(tenders.length > 0 ? { tenders } : null)
+                        if (tenders.length === 0) setPaymentActive(false)
+                        setConfirmTransaction(false)
+                        setCheckoutError('')
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                </ul>
+              )}
               {tenderSummary && !tenderSummary.valid && (
                 <p className="product-banner-error" role="alert">
                   {tenderSummary.error} Remove or replace a staged payment to continue.
@@ -1171,7 +1280,7 @@ function PosScreen({
                   {checkoutError}
                 </p>
               )}
-              {tenderSummary?.remainingCents !== 0 && (
+              {tenderSummary?.remainingCents !== 0 && !chargeCustomer && (
                 <div className="checkout-payment-actions">
                   <button
                     className="primary-button payment-button"
@@ -1189,11 +1298,11 @@ function PosScreen({
                   <p className="checkout-hint">
                     {mode === 'return'
                       ? 'Cash, Debit, or Credit refund · card refunds are recorded only'
-                      : 'Cash, Debit, or Credit'}
+                      : 'Cash, Debit, Credit, or Charge'}
                   </p>
                 </div>
               )}
-              {tenderSummary?.valid && tenderSummary.remainingCents === 0 ? (
+              {tenderSummary?.valid && (tenderSummary.remainingCents === 0 || chargeCustomer) ? (
                 <button
                   className="primary-button payment-complete-button"
                   ref={completeTransactionButtonRef}
@@ -1209,7 +1318,9 @@ function PosScreen({
                 type="button"
                 onClick={discardPaymentSession}
               >
-                {tenders.length > 0 ? 'Discard payment session' : 'Return to cart'}
+                {tenders.length > 0 || chargeCustomer
+                  ? 'Discard payment session'
+                  : 'Return to cart'}
               </button>
             </div>
           ) : zeroTotal ? (
@@ -1249,7 +1360,7 @@ function PosScreen({
               <p className="checkout-hint">
                 {mode === 'return'
                   ? 'Cash, Debit, or Credit refund · card refunds are recorded only'
-                  : 'Cash, Debit, or Credit'}
+                  : 'Cash, Debit, Credit, or Charge'}
               </p>
             </>
           )}
@@ -1305,8 +1416,16 @@ function PosScreen({
           onCancel={cancelTenderPicker}
           onSelect={(type) => {
             setPaymentMethodPickerOpen(false)
-            beginTender(type)
+            if (type === 'charge') beginChargeEntry()
+            else beginTender(type)
           }}
+        />
+      )}
+      {chargeCustomerDialogOpen && quote && tenderSummary && (
+        <ChargeCustomerDialog
+          remainingCents={tenderSummary.remainingCents}
+          onCancel={cancelChargeEntry}
+          onSubmit={stageCharge}
         />
       )}
       {tenderDialogType && quote && (
@@ -1325,6 +1444,8 @@ function PosScreen({
           isReturn={mode === 'return'}
           totalCents={quote.totalCents}
           tenderedCents={totalTenderedCents(tenders)}
+          chargeAmountCents={chargeAmountCents}
+          customerName={chargeCustomer?.name ?? null}
           changeCents={tenderSummary.changeCents}
           saving={savingSale}
           error={checkoutError}
@@ -1457,7 +1578,7 @@ interface TenderEntryDialogProps {
 interface PaymentMethodPickerDialogProps {
   isReturn: boolean
   onCancel: () => void
-  onSelect: (type: TenderType) => void
+  onSelect: (type: TenderType | 'charge') => void
 }
 
 function PaymentMethodPickerDialog({
@@ -1468,7 +1589,9 @@ function PaymentMethodPickerDialog({
   const dialogRef = useRef<HTMLDialogElement>(null)
   const methodRefs = useRef<Array<HTMLButtonElement | null>>([])
   const [focusedMethodIndex, setFocusedMethodIndex] = useState(0)
-  const methods: TenderType[] = ['cash', 'debit', 'credit']
+  const methods: Array<TenderType | 'charge'> = isReturn
+    ? ['cash', 'debit', 'credit']
+    : ['cash', 'debit', 'credit', 'charge']
 
   useEffect(() => {
     const dialog = dialogRef.current
@@ -1542,6 +1665,145 @@ function PaymentMethodPickerDialog({
           Cancel
         </button>
       </div>
+    </dialog>
+  )
+}
+
+interface ChargeCustomerDialogProps {
+  remainingCents: number
+  onCancel: () => void
+  onSubmit: (customer: ChargeCustomer) => string | null
+}
+
+function ChargeCustomerDialog({
+  remainingCents,
+  onCancel,
+  onSubmit
+}: ChargeCustomerDialogProps): React.JSX.Element {
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const [customer, setCustomer] = useState<ChargeCustomer>({
+    name: '',
+    companyName: '',
+    address: '',
+    phoneNumber: '',
+    email: ''
+  })
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (dialog && !dialog.open) dialog.showModal()
+    return () => {
+      if (dialog?.open) dialog.close()
+    }
+  }, [])
+
+  function submit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault()
+    if (!customer.name.trim()) {
+      setError('Enter the customer name.')
+      return
+    }
+    const result = onSubmit({
+      name: customer.name.trim(),
+      companyName: customer.companyName.trim(),
+      address: customer.address.trim(),
+      phoneNumber: customer.phoneNumber.trim(),
+      email: customer.email.trim()
+    })
+    if (result) setError(result)
+  }
+
+  function update(field: keyof ChargeCustomer, value: string): void {
+    setCustomer((current) => ({ ...current, [field]: value }))
+  }
+
+  return (
+    <dialog
+      className="product-dialog checkout-dialog"
+      ref={dialogRef}
+      aria-labelledby="charge-customer-title"
+      onCancel={(event) => {
+        event.preventDefault()
+        onCancel()
+      }}
+    >
+      <div className="dialog-heading">
+        <div>
+          <p className="eyebrow">Charge {currencyFormatter.format(remainingCents / 100)}</p>
+          <h2 id="charge-customer-title">Customer details</h2>
+        </div>
+        <button
+          className="dialog-close-button"
+          type="button"
+          aria-label="Cancel charge"
+          onClick={onCancel}
+        >
+          ×
+        </button>
+      </div>
+      <form onSubmit={submit}>
+        <div className="checkout-confirmation price-override-fields">
+          <label>
+            <span>Customer name</span>
+            <input
+              autoFocus
+              required
+              maxLength={200}
+              value={customer.name}
+              onChange={(event) => update('name', event.target.value)}
+            />
+          </label>
+          <label>
+            <span>Company name (optional)</span>
+            <input
+              maxLength={200}
+              value={customer.companyName}
+              onChange={(event) => update('companyName', event.target.value)}
+            />
+          </label>
+          <label>
+            <span>Address (optional)</span>
+            <textarea
+              rows={2}
+              maxLength={500}
+              value={customer.address}
+              onChange={(event) => update('address', event.target.value)}
+            />
+          </label>
+          <label>
+            <span>Phone number (optional)</span>
+            <input
+              type="tel"
+              maxLength={50}
+              value={customer.phoneNumber}
+              onChange={(event) => update('phoneNumber', event.target.value)}
+            />
+          </label>
+          <label>
+            <span>Email (optional)</span>
+            <input
+              type="email"
+              maxLength={254}
+              value={customer.email}
+              onChange={(event) => update('email', event.target.value)}
+            />
+          </label>
+          {error && (
+            <p className="product-banner-error" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
+        <div className="dialog-actions checkout-dialog-actions">
+          <button className="secondary-button" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="primary-button" type="submit">
+            Charge remaining balance
+          </button>
+        </div>
+      </form>
     </dialog>
   )
 }
@@ -1673,6 +1935,8 @@ interface CompleteSaleDialogProps {
   isReturn: boolean
   totalCents: number
   tenderedCents: number
+  chargeAmountCents: number
+  customerName: string | null
   changeCents: number
   saving: boolean
   error: string
@@ -1684,6 +1948,8 @@ function CompleteSaleDialog({
   isReturn,
   totalCents,
   tenderedCents,
+  chargeAmountCents,
+  customerName,
   changeCents,
   saving,
   error,
@@ -1716,7 +1982,13 @@ function CompleteSaleDialog({
     >
       <div className="dialog-heading">
         <div>
-          <p className="eyebrow">{isReturn ? 'Refund complete' : 'Payment complete'}</p>
+          <p className="eyebrow">
+            {isReturn
+              ? 'Refund confirmation'
+              : chargeAmountCents > 0
+                ? 'Charge confirmation'
+                : 'Payment complete'}
+          </p>
           <h2 id="complete-sale-title">
             {isReturn ? 'Complete this return?' : 'Complete this sale?'}
           </h2>
@@ -1738,15 +2010,29 @@ function CompleteSaleDialog({
             <strong>{currencyFormatter.format(totalCents / 100)}</strong>
           </div>
           <div>
-            <span>{isReturn ? 'Total payout' : 'Total tendered'}</span>
+            <span>
+              {isReturn ? 'Total payout' : chargeAmountCents > 0 ? 'Paid now' : 'Total tendered'}
+            </span>
             <strong>{currencyFormatter.format(tenderedCents / 100)}</strong>
           </div>
+          {chargeAmountCents > 0 && (
+            <div>
+              <span>Charged to {customerName}</span>
+              <strong>{currencyFormatter.format(chargeAmountCents / 100)}</strong>
+            </div>
+          )}
         </div>
         {!isReturn && (
           <div className="sale-confirmation-change" aria-live="polite">
             <span>Change due</span>
             <strong>{currencyFormatter.format(changeCents / 100)}</strong>
           </div>
+        )}
+        {chargeAmountCents > 0 && (
+          <p className="settings-help">
+            The customer will owe {currencyFormatter.format(chargeAmountCents / 100)} after this
+            sale.
+          </p>
         )}
         {isReturn && (
           <p className="settings-help">

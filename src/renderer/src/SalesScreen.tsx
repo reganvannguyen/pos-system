@@ -1,12 +1,14 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
+import type { FormEvent } from 'react'
 import type {
   DailyProductSummary,
   SaleDetail,
   SaleSummary,
   SalesPeriod,
-  SalesReport
+  SalesReport,
+  TenderType
 } from '../../shared/pos-api'
-import { tenderLabel } from './checkout'
+import { centsInput, parseCadCents, tenderLabel } from './checkout'
 import {
   getSalesReportDisplaySections,
   optionalSalesSummaryGroups,
@@ -260,6 +262,11 @@ function SalesScreen(): React.JSX.Element {
     }
   }
 
+  function updateSelectedSale(sale: SaleDetail): void {
+    setSelectedSale(sale)
+    setReloadKey((key) => key + 1)
+  }
+
   async function loadDailyProducts(date: string, retry = false): Promise<void> {
     if (loadingDailyProducts[date] || (!retry && dailyProducts[date] !== undefined)) return
     setLoadingDailyProducts((previous) => ({ ...previous, [date]: true }))
@@ -346,7 +353,11 @@ function SalesScreen(): React.JSX.Element {
   return (
     <section className="sales-page" aria-label="Sales history">
       {selectedSale ? (
-        <SaleDetailView sale={selectedSale} onBack={() => setSelectedSale(null)} />
+        <SaleDetailView
+          sale={selectedSale}
+          onBack={() => setSelectedSale(null)}
+          onUpdated={updateSelectedSale}
+        />
       ) : (
         <>
           <div className="sales-report-toolbar">
@@ -770,10 +781,12 @@ function money(cents: number): string {
 interface SaleDetailViewProps {
   sale: SaleDetail
   onBack: () => void
+  onUpdated: (sale: SaleDetail) => void
 }
 
-function SaleDetailView({ sale, onBack }: SaleDetailViewProps): React.JSX.Element {
+function SaleDetailView({ sale, onBack, onUpdated }: SaleDetailViewProps): React.JSX.Element {
   const [receiptDialogOpen, setReceiptDialogOpen] = useState(false)
+  const [chargePaymentOpen, setChargePaymentOpen] = useState(false)
 
   return (
     <div className={`sale-detail-card${sale.transactionType === 'return' ? ' is-return' : ''}`}>
@@ -801,10 +814,90 @@ function SaleDetailView({ sale, onBack }: SaleDetailViewProps): React.JSX.Elemen
         >
           Receipt options
         </button>
+        {sale.charge && sale.charge.balanceCents > 0 && (
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => setChargePaymentOpen(true)}
+          >
+            Record payment
+          </button>
+        )}
       </div>
 
       {receiptDialogOpen && (
         <ReceiptDialog sale={sale} onClose={() => setReceiptDialogOpen(false)} />
+      )}
+      {chargePaymentOpen && sale.charge && (
+        <ChargePaymentDialog
+          sale={sale}
+          onCancel={() => setChargePaymentOpen(false)}
+          onUpdated={(updatedSale) => {
+            setChargePaymentOpen(false)
+            onUpdated(updatedSale)
+          }}
+        />
+      )}
+
+      {sale.charge && (
+        <section className="sale-charge-details" aria-label="Charge details">
+          <div className="sale-charge-heading">
+            <div>
+              <p className="eyebrow">Charged to</p>
+              <h3>{sale.charge.customer.name}</h3>
+            </div>
+            <strong className={sale.charge.balanceCents > 0 ? 'charge-balance-due' : 'charge-paid'}>
+              {sale.charge.balanceCents > 0
+                ? `${currencyFormatter.format(sale.charge.balanceCents / 100)} due`
+                : 'Paid in full'}
+            </strong>
+          </div>
+          <dl className="sale-charge-customer">
+            {sale.charge.customer.companyName && (
+              <div>
+                <dt>Company</dt>
+                <dd>{sale.charge.customer.companyName}</dd>
+              </div>
+            )}
+            {sale.charge.customer.address && (
+              <div>
+                <dt>Address</dt>
+                <dd>{sale.charge.customer.address}</dd>
+              </div>
+            )}
+            {sale.charge.customer.phoneNumber && (
+              <div>
+                <dt>Phone</dt>
+                <dd>{sale.charge.customer.phoneNumber}</dd>
+              </div>
+            )}
+            {sale.charge.customer.email && (
+              <div>
+                <dt>Email</dt>
+                <dd>{sale.charge.customer.email}</dd>
+              </div>
+            )}
+          </dl>
+          <div className="sale-charge-totals">
+            <span>Amount charged {currencyFormatter.format(sale.charge.amountCents / 100)}</span>
+            <span>Balance due {currencyFormatter.format(sale.charge.balanceCents / 100)}</span>
+          </div>
+          {sale.charge.payments.length > 0 && (
+            <>
+              <h4>Repayments</h4>
+              <ul className="charge-payment-history">
+                {sale.charge.payments.map((payment, index) => (
+                  <li key={`${payment.createdAt}-${payment.type}-${index}`}>
+                    <span>
+                      {formatDate(payment.createdAt)} · {tenderLabel(payment.type)}
+                    </span>
+                    <strong>{currencyFormatter.format(payment.amountCents / 100)}</strong>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </section>
       )}
 
       {sale.transactionType === 'return' && (
@@ -875,7 +968,9 @@ function SaleDetailView({ sale, onBack }: SaleDetailViewProps): React.JSX.Elemen
           <p>
             {sale.transactionType === 'return'
               ? 'No refund payout was required.'
-              : 'No payment was required.'}
+              : sale.charge
+                ? 'No money was received at checkout.'
+                : 'No payment was required.'}
           </p>
         ) : (
           <ul>
@@ -949,8 +1044,129 @@ function SaleDetailView({ sale, onBack }: SaleDetailViewProps): React.JSX.Elemen
   )
 }
 
+interface ChargePaymentDialogProps {
+  sale: SaleDetail
+  onCancel: () => void
+  onUpdated: (sale: SaleDetail) => void
+}
+
+function ChargePaymentDialog({
+  sale,
+  onCancel,
+  onUpdated
+}: ChargePaymentDialogProps): React.JSX.Element {
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const [type, setType] = useState<TenderType>('cash')
+  const [amount, setAmount] = useState(centsInput(sale.charge?.balanceCents ?? 0))
+  const [working, setWorking] = useState(false)
+  const [error, setError] = useState('')
+  const remainingCents = sale.charge?.balanceCents ?? 0
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (dialog && !dialog.open) dialog.showModal()
+    return () => {
+      if (dialog?.open) dialog.close()
+    }
+  }, [])
+
+  async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    if (working) return
+    const amountCents = parseCadCents(amount)
+    if (amountCents === null || amountCents <= 0) {
+      setError('Enter a payment above $0.00 with up to two decimal places.')
+      return
+    }
+    if (amountCents > remainingCents) {
+      setError('The payment cannot be greater than the outstanding balance.')
+      return
+    }
+    setWorking(true)
+    setError('')
+    try {
+      const result = await window.pos.sales.recordChargePayment({
+        saleId: sale.id,
+        type,
+        amountCents
+      })
+      if (!result.ok) {
+        setError(result.error.message)
+        return
+      }
+      onUpdated(result.data)
+    } catch {
+      setError('The payment could not be recorded. Try again.')
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  return (
+    <dialog
+      className="product-dialog checkout-dialog"
+      ref={dialogRef}
+      aria-labelledby="charge-payment-title"
+      onCancel={(event) => {
+        event.preventDefault()
+        if (!working) onCancel()
+      }}
+    >
+      <div className="dialog-heading">
+        <div>
+          <p className="eyebrow">Balance due {currencyFormatter.format(remainingCents / 100)}</p>
+          <h2 id="charge-payment-title">Record customer payment</h2>
+        </div>
+        <button
+          className="dialog-close-button"
+          type="button"
+          aria-label="Cancel payment entry"
+          disabled={working}
+          onClick={onCancel}
+        >
+          ×
+        </button>
+      </div>
+      <form onSubmit={(event) => void submit(event)}>
+        <div className="checkout-confirmation price-override-fields">
+          <label>
+            <span>Payment method</span>
+            <select value={type} onChange={(event) => setType(event.target.value as TenderType)}>
+              <option value="cash">Cash</option>
+              <option value="debit">Debit</option>
+              <option value="credit">Credit</option>
+            </select>
+          </label>
+          <label>
+            <span>Amount received (CAD)</span>
+            <input
+              inputMode="decimal"
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+            />
+          </label>
+          {error && (
+            <p className="product-banner-error" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
+        <div className="dialog-actions checkout-dialog-actions">
+          <button className="secondary-button" type="button" disabled={working} onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="primary-button" type="submit" disabled={working}>
+            {working ? 'Recording…' : 'Record payment'}
+          </button>
+        </div>
+      </form>
+    </dialog>
+  )
+}
+
 function formatPaymentMethod(sale: Pick<SaleSummary, 'paymentMethod' | 'payments'>): string {
   if (sale.paymentMethod === 'split') return 'Split'
+  if (sale.paymentMethod === 'charge') return 'Charge'
   if (sale.paymentMethod === 'none') return 'No payment'
   if (sale.paymentMethod === 'cash') return 'Cash'
 

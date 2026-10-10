@@ -34,6 +34,27 @@ export interface SalePaymentRecord {
   change_cents: number
 }
 
+export interface ChargePaymentRecord {
+  id: number
+  charge_id: number
+  payment_type: 'cash' | 'debit' | 'credit'
+  amount_cents: number
+  created_at: string
+}
+
+export interface SaleChargeRecord {
+  id: number
+  sale_id: number
+  customer_name: string
+  company_name: string
+  address: string
+  phone_number: string
+  email: string
+  amount_cents: number
+  balance_cents: number
+  payments: ChargePaymentRecord[]
+}
+
 export interface SaleItemRecord {
   id: number
   sale_id: number

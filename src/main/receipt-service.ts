@@ -139,6 +139,7 @@ export function createReceiptService({
       const body = [
         `Attached is your receipt from ${currentSettings.business_name}.`,
         `${transactionLabel} #${sale.transaction_number} · ${amountLabel} ${formatMoney(transactionTotal)}`,
+        sale.charge ? `Balance due: ${formatMoney(sale.charge.balance_cents)}` : '',
         currentSettings.business_email ? `Store contact: ${currentSettings.business_email}` : ''
       ]
         .filter(Boolean)
@@ -177,7 +178,10 @@ export function createReceiptService({
       const dateTime = formatReceiptDateTime(sale.created_at)
       const transactionLabel = sale.transaction_type === 'return' ? 'Return' : 'Invoice'
       const amountLabel = sale.transaction_type === 'return' ? 'Refunded' : 'Total'
-      const message = `${currentSettings.business_name} · ${transactionLabel} #${sale.transaction_number} · ${dateTime.date} ${dateTime.time} · ${amountLabel} ${formatMoney(signedAmount(sale.total_cents, sale.transaction_type))}`
+      const balanceDue = sale.charge
+        ? ` · Balance due ${formatMoney(sale.charge.balance_cents)}`
+        : ''
+      const message = `${currentSettings.business_name} · ${transactionLabel} #${sale.transaction_number} · ${dateTime.date} ${dateTime.time} · ${amountLabel} ${formatMoney(signedAmount(sale.total_cents, sale.transaction_type))}${balanceDue}`
       const draftOpened = await openExternal(buildTextUrl(recipient, message)).then(
         () => true,
         () => false
@@ -287,7 +291,20 @@ function toReceiptTemplateSale(sale: SaleDetailRecord): ReceiptTemplateSale {
           : signedAmount(payment.amount_tendered_cents, sale.transaction_type),
       amountAppliedCents: signedAmount(payment.amount_applied_cents, sale.transaction_type),
       changeCents: payment.change_cents
-    }))
+    })),
+    charge: sale.charge
+      ? {
+          customer: {
+            name: sale.charge.customer_name,
+            companyName: sale.charge.company_name,
+            address: sale.charge.address,
+            phoneNumber: sale.charge.phone_number,
+            email: sale.charge.email
+          },
+          amountCents: sale.charge.amount_cents,
+          balanceCents: sale.charge.balance_cents
+        }
+      : null
   }
 }
 

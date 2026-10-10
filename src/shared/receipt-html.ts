@@ -21,6 +21,17 @@ export interface ReceiptTemplateSale {
     amountAppliedCents: number
     changeCents: number
   }>
+  charge?: {
+    customer: {
+      name: string
+      companyName: string
+      address: string
+      phoneNumber: string
+      email: string
+    }
+    amountCents: number
+    balanceCents: number
+  } | null
 }
 
 export function renderReceiptHtml(
@@ -54,6 +65,9 @@ export function renderReceiptHtml(
       )
   const change = sale.payments.reduce((total, payment) => total + payment.changeCents, 0)
   const paymentTypes = [...new Set(sale.payments.map(({ type }) => tenderLabel(type)))].join(' + ')
+  const chargePaymentTypes = sale.charge
+    ? [paymentTypes, 'Charge'].filter(Boolean).join(' + ')
+    : paymentTypes
   const dateTime = formatReceiptDateTime(sale.createdAt)
 
   return `<!doctype html>
@@ -86,6 +100,8 @@ export function renderReceiptHtml(
     .totals div { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
     .total { margin-top: 4px; padding-top: 5px !important; border-top: 1px solid #111; font-weight: 700; }
     .payment-details { margin-top: 7px; }
+    .customer-details { margin: 5px 0 9px; padding: 6px 0; border-top: 1px dashed #333; border-bottom: 1px dashed #333; }
+    .customer-details strong { display: block; margin-bottom: 3px; }
     footer { margin-top: 9px; padding-top: 7px; border-top: 1px dashed #333; text-align: center; }
     .preview-note { color: #555; font-size: 9px; }
   </style>
@@ -105,6 +121,18 @@ export function renderReceiptHtml(
       <p>TIME: ${dateTime.time}</p>
     </div>
   </header>
+  ${
+    sale.charge
+      ? `<section class="customer-details" aria-label="Customer details">
+    <strong>CHARGED TO</strong>
+    <p>${escapeHtml(sale.charge.customer.name)}</p>
+    ${sale.charge.customer.companyName ? `<p>${escapeHtml(sale.charge.customer.companyName)}</p>` : ''}
+    ${sale.charge.customer.address ? `<p>${escapeHtml(sale.charge.customer.address)}</p>` : ''}
+    ${sale.charge.customer.phoneNumber ? `<p>${escapeHtml(sale.charge.customer.phoneNumber)}</p>` : ''}
+    ${sale.charge.customer.email ? `<p>${escapeHtml(sale.charge.customer.email)}</p>` : ''}
+  </section>`
+      : ''
+  }
   <table aria-label="${isReturn ? 'Returned' : 'Purchased'} items">
     <thead><tr><th>Description</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
     <tbody>${items}</tbody>
@@ -114,9 +142,10 @@ export function renderReceiptHtml(
     ${taxRows}
     ${sale.taxes.length ? `<div><span>Tax total</span><span>${formatMoney(sale.taxCents)}</span></div>` : ''}
     <div class="total"><span>Total</span><span>${formatMoney(sale.totalCents)}</span></div>
-    <div class="payment-details"><span>${isReturn ? 'Amount refunded' : 'Amount tendered'}</span><span>${tendered}</span></div>
+    <div class="payment-details"><span>${isReturn ? 'Amount refunded' : sale.charge ? 'Paid now' : 'Amount tendered'}</span><span>${tendered}</span></div>
     ${isReturn ? '' : `<div><span>Change due</span><span>${formatMoney(change)}</span></div>`}
-    <div><span>${isReturn ? 'Refund method' : 'Payment type'}</span><span>${escapeHtml(paymentTypes || 'No payment required')}</span></div>
+    ${sale.charge ? `<div><span>Amount charged</span><span>${formatMoney(sale.charge.amountCents)}</span></div><div class="total"><span>Balance due</span><span>${formatMoney(sale.charge.balanceCents)}</span></div>` : ''}
+    <div><span>${isReturn ? 'Refund method' : 'Payment type'}</span><span>${escapeHtml(chargePaymentTypes || 'No payment required')}</span></div>
   </section>
   <footer>
     ${business.businessGstNumber ? `<p>GST/HST #${escapeHtml(business.businessGstNumber)}</p>` : ''}
@@ -148,6 +177,7 @@ export function renderReceiptPreviewHtml(business: ReceiptBusinessDetails): stri
       ],
       taxCents: 214,
       totalCents: 1999,
+      charge: null,
       payments: [
         {
           type: 'cash',

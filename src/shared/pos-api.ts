@@ -10,6 +10,7 @@ export const IPC_CHANNELS = {
   salesCompleteCheckout: 'sales:complete-checkout',
   salesQuoteReturn: 'sales:quote-return',
   salesCompleteReturn: 'sales:complete-return',
+  salesRecordChargePayment: 'sales:record-charge-payment',
   salesListRecent: 'sales:list-recent',
   salesReport: 'sales:report',
   salesProductsForDay: 'sales:products-for-day',
@@ -67,7 +68,34 @@ export type ProductResult<T> = { ok: true; data: T } | { ok: false; error: Produ
 
 export type TenderType = 'cash' | 'debit' | 'credit'
 export type SavedTenderType = TenderType | 'mastercard' | 'visa' | 'card'
-export type PaymentMethod = 'cash' | 'card' | 'split' | 'none'
+export type PaymentMethod = 'cash' | 'card' | 'charge' | 'split' | 'none'
+
+export interface ChargeCustomer {
+  name: string
+  companyName: string
+  address: string
+  phoneNumber: string
+  email: string
+}
+
+export interface ChargePayment {
+  type: TenderType
+  amountCents: number
+  createdAt: string
+}
+
+export interface ChargeDetails {
+  customer: ChargeCustomer
+  amountCents: number
+  balanceCents: number
+  payments: ChargePayment[]
+}
+
+export interface ChargePaymentRequest {
+  saleId: number
+  type: TenderType
+  amountCents: number
+}
 
 export interface PriceOverrideInput {
   unitPriceCents: number
@@ -88,6 +116,7 @@ export interface TenderInput {
 export interface CheckoutRequest {
   items: CheckoutItem[]
   tenders: TenderInput[]
+  chargeCustomer?: ChargeCustomer
 }
 
 export interface ReturnItemInput {
@@ -145,6 +174,8 @@ export interface SaleSummary {
   taxCents: number
   totalCents: number
   paymentMethod: PaymentMethod
+  chargeAmountCents: number | null
+  chargeBalanceCents: number | null
   payments: SalePayment[]
   createdAt: string
   itemCount: number
@@ -227,6 +258,7 @@ export interface SaleDetail extends SaleSummary {
   items: SaleItem[]
   payments: SalePayment[]
   taxBreakdown: SaleTax[]
+  charge: ChargeDetails | null
 }
 
 export interface SaleCompletion {
@@ -375,6 +407,7 @@ export interface PosApi {
     completeCheckout(request: CheckoutRequest): Promise<SaleResult<SaleCompletion>>
     quoteReturn(request: ReturnQuoteRequest): Promise<SaleResult<ReturnQuote>>
     completeReturn(request: ReturnRequest): Promise<SaleResult<ReturnCompletion>>
+    recordChargePayment(request: ChargePaymentRequest): Promise<SaleResult<SaleDetail>>
     listRecent(): Promise<SaleResult<SaleSummary[]>>
     report(period: SalesPeriod): Promise<SaleResult<SalesReport>>
     productsForDay(date: string): Promise<SaleResult<DailyProductSummary[]>>
