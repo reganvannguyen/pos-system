@@ -67,6 +67,7 @@ export interface ProductApiError {
 export type ProductResult<T> = { ok: true; data: T } | { ok: false; error: ProductApiError }
 
 export type TenderType = 'cash' | 'debit' | 'credit'
+export type ChargePaymentTenderType = TenderType | 'etransfer' | 'check'
 export type SavedTenderType = TenderType | 'mastercard' | 'visa' | 'card'
 export type PaymentMethod = 'cash' | 'card' | 'charge' | 'split' | 'none'
 
@@ -79,7 +80,7 @@ export interface ChargeCustomer {
 }
 
 export interface ChargePayment {
-  type: TenderType
+  type: ChargePaymentTenderType
   amountCents: number
   createdAt: string
 }
@@ -93,7 +94,7 @@ export interface ChargeDetails {
 
 export interface ChargePaymentRequest {
   saleId: number
-  type: TenderType
+  type: ChargePaymentTenderType
   amountCents: number
 }
 
@@ -220,15 +221,34 @@ export interface SalesReportTotals {
   cardReceivedCents: number
   cardRefundedCents: number
   cardNetCents: number
+  etransferReceivedCents: number
+  checkReceivedCents: number
+}
+
+export interface SalesReportTaxTotal {
+  taxName: string
+  salesTaxCents: number
+  returnsTaxCents: number
+  netTaxCents: number
 }
 
 export interface SalesReport {
   sales: SaleSummary[]
   totals: SalesReportTotals
+  taxTotals: SalesReportTaxTotal[]
 }
 
 export type SalesSummaryGroup =
-  'overview' | 'gross' | 'returns' | 'cash' | 'debit' | 'credit' | 'card' | 'net'
+  | 'overview'
+  | 'gross'
+  | 'returns'
+  | 'cash'
+  | 'debit'
+  | 'credit'
+  | 'card'
+  | 'etransfer'
+  | 'check'
+  | 'net'
 
 export interface DailyProductSummary {
   productId: number | null
@@ -240,6 +260,7 @@ export interface DailyProductSummary {
 
 export type SalesCsvExportResult = { canceled: true } | { canceled: false; rowCount: number }
 export type SalesPdfExportResult = { canceled: true } | { canceled: false; rowCount: number }
+export type SalesPdfReportType = 'summary' | 'itemized'
 
 export interface SaleItem {
   productId: number | null
@@ -414,7 +435,8 @@ export interface PosApi {
     exportCsv(period: SalesPeriod): Promise<SaleResult<SalesCsvExportResult>>
     exportPdf(
       period: SalesPeriod,
-      summaryGroups: SalesSummaryGroup[]
+      summaryGroups: SalesSummaryGroup[],
+      reportType?: SalesPdfReportType
     ): Promise<SaleResult<SalesPdfExportResult>>
     getById(id: number): Promise<SaleResult<SaleDetail>>
   }

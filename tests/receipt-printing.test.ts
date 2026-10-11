@@ -43,7 +43,11 @@ const schema =
     join(process.cwd(), 'src/main/database/migrations/008_transaction_numbers.sql'),
     'utf8'
   ) +
-  readFileSync(join(process.cwd(), 'src/main/database/migrations/009_sale_charges.sql'), 'utf8')
+  readFileSync(join(process.cwd(), 'src/main/database/migrations/009_sale_charges.sql'), 'utf8') +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/010_charge_payment_tenders.sql'),
+    'utf8'
+  )
 
 async function withReceiptService(
   run: (context: {
@@ -178,6 +182,14 @@ test('live receipt preview renders draft details in the shared 58 mm invoice tem
     businessGstNumber: '123456789RT0001',
     businessWebsite: 'rainbow.example'
   })
+  assert.match(
+    html,
+    /body \{ width: 100%; max-width: 58mm; margin: 0 auto; padding: 4mm; color: #000;/
+  )
+  assert.match(html, /font: 600 11px\/1\.35 Consolas/)
+  assert.match(html, /text-align: center; margin-bottom: 9px/)
+  assert.match(html, /td \{ padding: 5px 0;/)
+  assert.match(html, /width: 31%; text-align: right/)
   assert.match(html, /width: 58mm/)
   assert.match(html, /Rainbow &amp; Co/)
   assert.match(html, /496 Stetson Street/)

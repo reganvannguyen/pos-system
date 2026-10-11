@@ -37,7 +37,7 @@ export interface SalePaymentRecord {
 export interface ChargePaymentRecord {
   id: number
   charge_id: number
-  payment_type: 'cash' | 'debit' | 'credit'
+  payment_type: 'cash' | 'debit' | 'credit' | 'etransfer' | 'check'
   amount_cents: number
   created_at: string
 }

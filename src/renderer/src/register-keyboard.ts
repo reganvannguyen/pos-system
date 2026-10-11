@@ -111,6 +111,20 @@ export function nextPaymentMethodIndex(
   return (currentIndex + direction + optionCount) % optionCount
 }
 
+export function resolvePaymentMethodShortcut<T extends string>(
+  key: string,
+  methods: readonly T[]
+): T | null {
+  const shortcuts: Record<string, string> = {
+    '1': 'cash',
+    '2': 'credit',
+    '3': 'charge',
+    '4': 'debit'
+  }
+  const method = shortcuts[key]
+  return method && methods.includes(method as T) ? (method as T) : null
+}
+
 export function nextDirectionalFocusIndex(
   currentIndex: number,
   rects: readonly FocusRect[],

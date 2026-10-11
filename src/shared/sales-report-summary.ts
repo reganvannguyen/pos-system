@@ -14,7 +14,9 @@ export const optionalSalesSummaryGroups = [
   { value: 'returns', label: 'Returns' },
   { value: 'cash', label: 'Cash details' },
   { value: 'debit', label: 'Debit details' },
-  { value: 'credit', label: 'Credit details' }
+  { value: 'credit', label: 'Credit details' },
+  { value: 'etransfer', label: 'E-transfer details' },
+  { value: 'check', label: 'Check details' }
 ] as const satisfies ReadonlyArray<{ value: SalesSummaryGroup; label: string }>
 
 export const recognizedSalesSummaryGroups: ReadonlyArray<{
@@ -23,7 +25,11 @@ export const recognizedSalesSummaryGroups: ReadonlyArray<{
 }> = [
   ...salesSummaryGroups,
   ...optionalSalesSummaryGroups.filter(
-    (group) => group.value === 'debit' || group.value === 'credit'
+    (group) =>
+      group.value === 'debit' ||
+      group.value === 'credit' ||
+      group.value === 'etransfer' ||
+      group.value === 'check'
   )
 ]
 
@@ -132,6 +138,10 @@ export function getSalesSummaryMetrics(
         { label: 'Credit net', value: totals.creditNetCents ?? received - refunded, kind: 'money' }
       ]
     }
+    case 'etransfer':
+      return [{ label: 'E-transfer received', value: totals.etransferReceivedCents, kind: 'money' }]
+    case 'check':
+      return [{ label: 'Check received', value: totals.checkReceivedCents, kind: 'money' }]
   }
 }
 
@@ -175,7 +185,9 @@ export function getSalesReportDisplaySections(
       metrics: [
         getSalesSummaryMetrics(totals, 'cash')[2],
         getSalesSummaryMetrics(totals, 'debit')[2],
-        getSalesSummaryMetrics(totals, 'credit')[2]
+        getSalesSummaryMetrics(totals, 'credit')[2],
+        getSalesSummaryMetrics(totals, 'etransfer')[0],
+        getSalesSummaryMetrics(totals, 'check')[0]
       ]
     }
   ]

@@ -106,8 +106,12 @@ function registerSalesHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.salesExportCsv, (_event, period: unknown) =>
     toSalesResultAsync(() => requireSalesExportService().exportCsv(period))
   )
-  ipcMain.handle(IPC_CHANNELS.salesExportPdf, (_event, period: unknown, summaryGroups: unknown) =>
-    toSalesResultAsync(() => requireSalesExportService().exportPdf(period, summaryGroups))
+  ipcMain.handle(
+    IPC_CHANNELS.salesExportPdf,
+    (_event, period: unknown, summaryGroups: unknown, reportType: unknown) =>
+      toSalesResultAsync(() =>
+        requireSalesExportService().exportPdf(period, summaryGroups, reportType)
+      )
   )
   ipcMain.handle(IPC_CHANNELS.salesGetById, (_event, id: unknown) =>
     toSalesResult(() => requireSalesService().getById(id))
@@ -225,7 +229,12 @@ app.whenReady().then(() => {
     businessSettingsService = createBusinessSettingsService(repositories.settings)
     taxSettingsService = createTaxSettingsService(repositories.taxes)
     salesService = createSalesService(repositories.sales)
-    salesExportService = createSalesExportService(salesService, saveSalesCsvFile, saveSalesPdfFile)
+    salesExportService = createSalesExportService(
+      salesService,
+      saveSalesCsvFile,
+      saveSalesPdfFile,
+      () => requireBusinessSettingsService().get()
+    )
     receiptService = createReceiptService({
       sales: repositories.sales,
       settings: repositories.settings,

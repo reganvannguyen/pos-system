@@ -24,8 +24,8 @@ const posApi: PosApi = {
     report: (period) => ipcRenderer.invoke(IPC_CHANNELS.salesReport, period),
     productsForDay: (date) => ipcRenderer.invoke(IPC_CHANNELS.salesProductsForDay, date),
     exportCsv: (period) => ipcRenderer.invoke(IPC_CHANNELS.salesExportCsv, period),
-    exportPdf: (period, summaryGroups) =>
-      ipcRenderer.invoke(IPC_CHANNELS.salesExportPdf, period, summaryGroups),
+    exportPdf: (period, summaryGroups, reportType) =>
+      ipcRenderer.invoke(IPC_CHANNELS.salesExportPdf, period, summaryGroups, reportType),
     getById: (id) => ipcRenderer.invoke(IPC_CHANNELS.salesGetById, id)
   },
   printers: {

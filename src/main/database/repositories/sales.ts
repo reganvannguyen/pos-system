@@ -1,4 +1,9 @@
-import type { ChargeCustomer, TenderInput, CheckoutItem } from '../../../shared/pos-api'
+import type {
+  ChargeCustomer,
+  ChargePaymentTenderType,
+  TenderInput,
+  CheckoutItem
+} from '../../../shared/pos-api'
 import type {
   ChargePaymentRecord,
   PosDatabase,
@@ -54,6 +59,12 @@ export interface SaleSummaryRecord extends SaleRecord {
   charge: SaleChargeRecord | null
 }
 
+export interface SaleTaxReportRecord {
+  sale_id: number
+  tax_name: string
+  tax_cents: number
+}
+
 export interface SaleDetailRecord extends SaleSummaryRecord {
   items: SaleItemRecord[]
   tax_breakdown: SaleTaxBreakdownRecord[]
@@ -65,6 +76,17 @@ export interface DailyProductSummaryRecord {
   product_name: string
   net_quantity: number
   net_amount_cents: number
+}
+
+export interface ProductReportLineRecord {
+  sale_id: number
+  sale_item_id: number
+  product_id: number | null
+  sku: string
+  product_name: string
+  quantity: number
+  line_total_cents: number
+  transaction_type: 'sale' | 'return'
 }
 
 export interface DailyProductByDayRecord extends DailyProductSummaryRecord {
@@ -122,8 +144,16 @@ export function createSalesRepository(
      WHERE sales.created_at >= @startInclusive AND sales.created_at < @endExclusive
      ORDER BY sales.created_at DESC, sales.id DESC`
   )
+  const listTaxLinesInRangeStatement = database.prepare(
+    `SELECT sales.id AS sale_id, sale_taxes.tax_name, sale_taxes.tax_cents
+     FROM sales
+     JOIN sale_taxes ON sale_taxes.sale_id = sales.id
+     WHERE sales.created_at >= @startInclusive AND sales.created_at < @endExclusive
+     ORDER BY sales.id, sale_taxes.id`
+  )
   const listProductLinesInRangeStatement = database.prepare(
-    `SELECT sale_items.product_id, sale_items.sku, sale_items.product_name,
+    `SELECT sales.id AS sale_id, sale_items.id AS sale_item_id,
+            sale_items.product_id, sale_items.sku, sale_items.product_name,
             sale_items.quantity, sale_items.line_total_cents, sales.transaction_type,
             sales.created_at
      FROM sales
@@ -621,7 +651,7 @@ export function createSalesRepository(
   )
 
   const recordChargePayment = database.transaction(
-    (input: { saleId: number; type: 'cash' | 'debit' | 'credit'; amountCents: number }) => {
+    (input: { saleId: number; type: ChargePaymentTenderType; amountCents: number }) => {
       if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0) {
         throw new SalesRepositoryError('invalid-input', 'Payment amounts must be above zero.')
       }
@@ -676,7 +706,7 @@ export function createSalesRepository(
     },
     recordChargePayment(input: {
       saleId: number
-      type: 'cash' | 'debit' | 'credit'
+      type: ChargePaymentTenderType
       amountCents: number
     }) {
       return recordChargePayment.immediate(input)
@@ -699,6 +729,12 @@ export function createSalesRepository(
       >
       return attachPayments(rows)
     },
+    taxLinesInRange(startInclusive: string, endExclusive: string): SaleTaxReportRecord[] {
+      return listTaxLinesInRangeStatement.all({
+        startInclusive,
+        endExclusive
+      }) as SaleTaxReportRecord[]
+    },
     chargePaymentsInRange(
       startInclusive: string,
       endExclusive: string
@@ -707,6 +743,12 @@ export function createSalesRepository(
         startInclusive,
         endExclusive
       }) as ChargePaymentSummaryRecord[]
+    },
+    productLinesInRange(startInclusive: string, endExclusive: string): ProductReportLineRecord[] {
+      return listProductLinesInRangeStatement.all({
+        startInclusive,
+        endExclusive
+      }) as ProductReportLineRecord[]
     },
     productTotalsInRange(
       startInclusive: string,

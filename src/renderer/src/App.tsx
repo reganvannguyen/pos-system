@@ -57,7 +57,9 @@ function App(): React.JSX.Element {
 
   return (
     <div className="app-shell">
-      <main className="main-panel">
+      <main
+        className={`main-panel${activeView === 'POS' ? ' is-register-view' : ''}${activeView === 'Sales' ? ' is-sales-view' : ''}`}
+      >
         <header className="topbar">
           <div className="topbar-title">
             <p className="eyebrow">POS system</p>

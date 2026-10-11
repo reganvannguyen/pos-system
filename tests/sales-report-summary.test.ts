@@ -4,6 +4,7 @@ import type { SalesReportTotals } from '../src/shared/pos-api'
 import {
   getSalesSummaryMetrics,
   getSalesSummaryMetricsForGroups,
+  getSalesReportDisplaySections,
   isSalesSummaryGroup,
   parseSalesSummaryGroups,
   salesSummaryGroups
@@ -27,7 +28,9 @@ const totals: SalesReportTotals = {
   cashNetCents: 2239,
   cardReceivedCents: 6477,
   cardRefundedCents: 2239,
-  cardNetCents: 4238
+  cardNetCents: 4238,
+  etransferReceivedCents: 350,
+  checkReceivedCents: 125
 }
 
 test('each sales summary group returns its three report metrics', () => {
@@ -76,6 +79,8 @@ test('returns and refunds keep negative signs, and net total stays emphasized', 
 test('only supported saved values are accepted as a summary group', () => {
   assert.equal(isSalesSummaryGroup('overview'), true)
   assert.equal(isSalesSummaryGroup('card'), true)
+  assert.equal(isSalesSummaryGroup('etransfer'), true)
+  assert.equal(isSalesSummaryGroup('check'), true)
   assert.equal(isSalesSummaryGroup('unknown'), false)
   assert.equal(isSalesSummaryGroup(null), false)
 })
@@ -84,6 +89,32 @@ test('selected groups show cards from every selected summary', () => {
   assert.deepEqual(
     getSalesSummaryMetricsForGroups(totals, ['overview', 'cash']).map((metric) => metric.label),
     ['Transactions', 'Sales', 'Returns', 'Cash received', 'Cash refunded', 'Cash net']
+  )
+  assert.deepEqual(
+    getSalesSummaryMetricsForGroups(totals, ['etransfer', 'check']).map(({ label, value }) => [
+      label,
+      value
+    ]),
+    [
+      ['E-transfer received', 350],
+      ['Check received', 125]
+    ]
+  )
+})
+
+test('payment report section keeps e-transfer and check receipts separate', () => {
+  const payments = getSalesReportDisplaySections(totals, []).find(
+    (section) => section.id === 'payments'
+  )
+  assert.deepEqual(
+    payments?.metrics.map(({ label, value }) => [label, value]),
+    [
+      ['Cash net', 2239],
+      ['Debit net', 0],
+      ['Credit net', 4238],
+      ['E-transfer received', 350],
+      ['Check received', 125]
+    ]
   )
 })
 

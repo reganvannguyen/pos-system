@@ -32,7 +32,7 @@ const schemaBeforeReturns =
     join(process.cwd(), 'src/main/database/migrations/006_receipt_business_details.sql'),
     'utf8'
   )
-const schema =
+const schemaBeforeChargePaymentTenders =
   schemaBeforeReturns +
   readFileSync(
     join(process.cwd(), 'src/main/database/migrations/007_standalone_returns.sql'),
@@ -43,6 +43,12 @@ const schema =
     'utf8'
   ) +
   readFileSync(join(process.cwd(), 'src/main/database/migrations/009_sale_charges.sql'), 'utf8')
+const schema =
+  schemaBeforeChargePaymentTenders +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/010_charge_payment_tenders.sql'),
+    'utf8'
+  )
 
 interface SalesTestContext {
   database: Database.Database
@@ -696,7 +702,7 @@ test('charges the balance left after a partial cash payment', () => {
   })
 })
 
-test('records partial and final charge repayments and rejects overpayment', () => {
+test('records partial and final charge repayments by tender and rejects overpayment', () => {
   withSales(({ products, service }) => {
     const productId = createProduct(products, {
       sku: 'CHARGE-REPAY',
@@ -733,17 +739,25 @@ test('records partial and final charge repayments and rejects overpayment', () =
       'invalid-input'
     )
 
+    const secondPartial = service.recordChargePayment({
+      saleId: checkout.sale.id,
+      type: 'etransfer',
+      amountCents: 250
+    })
+    assert.equal(secondPartial.charge?.balanceCents, 500)
+
     const paid = service.recordChargePayment({
       saleId: checkout.sale.id,
-      type: 'credit',
-      amountCents: 750
+      type: 'check',
+      amountCents: 500
     })
     assert.equal(paid.charge?.balanceCents, 0)
     assert.deepEqual(
       paid.charge?.payments.map(({ type, amountCents }) => [type, amountCents]),
       [
         ['cash', 250],
-        ['credit', 750]
+        ['etransfer', 250],
+        ['check', 500]
       ]
     )
     assert.equal(paid.chargeBalanceCents, 0)
@@ -771,17 +785,33 @@ test('counts charge repayments in reports on the date they are received', () => 
     setSaleTimestamp(database, checkout.sale.id, '2020-01-01 12:00:00')
     service.recordChargePayment({
       saleId: checkout.sale.id,
-      type: 'cash',
+      type: 'etransfer',
       amountCents: 300
     })
-    database.prepare('UPDATE charge_payments SET created_at = ?').run('2099-06-15 12:00:00')
+    service.recordChargePayment({
+      saleId: checkout.sale.id,
+      type: 'check',
+      amountCents: 200
+    })
+    database
+      .prepare('UPDATE charge_payments SET created_at = ? WHERE payment_type = ?')
+      .run('2099-06-15 12:00:00', 'etransfer')
+    database
+      .prepare('UPDATE charge_payments SET created_at = ? WHERE payment_type = ?')
+      .run('2099-06-16 12:00:00', 'check')
 
     const saleYear = service.report({ type: 'year', year: 2020 })
     const repaymentYear = service.report({ type: 'year', year: 2099 })
+    const eTransferDay = service.report({ type: 'day', date: '2099-06-15' })
+    const checkDay = service.report({ type: 'day', date: '2099-06-16' })
     assert.equal(saleYear.totals.grossSalesTotalCents, 1000)
     assert.equal(saleYear.totals.cashReceivedCents, 0)
     assert.equal(repaymentYear.totals.transactionCount, 0)
-    assert.equal(repaymentYear.totals.cashReceivedCents, 300)
+    assert.equal(repaymentYear.totals.etransferReceivedCents, 300)
+    assert.equal(repaymentYear.totals.checkReceivedCents, 200)
+    assert.equal(eTransferDay.totals.etransferReceivedCents, 300)
+    assert.equal(eTransferDay.totals.checkReceivedCents, 0)
+    assert.equal(checkDay.totals.checkReceivedCents, 200)
   })
 })
 
@@ -804,6 +834,15 @@ test('validates charge customer details and requires a real remaining balance', 
             phoneNumber: '',
             email: ''
           }
+        })
+      ),
+      'invalid-input'
+    )
+    assertSaleError(
+      toSalesResult(() =>
+        service.completeCheckout({
+          items: [{ productId, quantity: 1 }],
+          tenders: [{ type: 'etransfer', amountCents: 1000 }]
         })
       ),
       'invalid-input'
@@ -1334,7 +1373,7 @@ test('sales report rejects invalid dates and reversed custom ranges', () => {
   })
 })
 
-test('CSV export writes one transaction per row and reports save cancellation or failure', async () => {
+test('CSV export includes period tender totals and reports save cancellation or failure', async () => {
   await withSales(async ({ database, products, service }) => {
     const productId = createProduct(products, {
       sku: 'CSV',
@@ -1365,6 +1404,12 @@ test('CSV export writes one transaction per row and reports save cancellation or
       savedContents.split('\r\n')[1],
       `sale,Invoice #${sale.sale.transactionNumber},2025-03-09 12:00:00,cash,"Cash: tendered 3.00, applied 2.50, change 0.50",,1,2.50,0.00,2.50`
     )
+    assert.match(savedContents, /report_total,,,Cash,Cash received,,,,,2\.50/)
+    assert.match(savedContents, /report_total,,,E-transfer,E-transfer received,,,,,0\.00/)
+    assert.match(savedContents, /report_total,,,Check,Check received,,,,,0\.00/)
+    assert.match(savedContents, /report_total,,,Net,Net subtotal,,,2\.50,,/)
+    assert.match(savedContents, /report_total,,,Net,Net tax,,,,0\.00,/)
+    assert.match(savedContents, /report_total,,,Net,Net total,,,,,2\.50/)
 
     const canceledExporter = createSalesExportService(service, async () => false)
     assert.deepEqual(await canceledExporter.exportCsv({ type: 'day', date: '2025-03-09' }), {
@@ -1378,6 +1423,309 @@ test('CSV export writes one transaction per row and reports save cancellation or
       await toSalesResultAsync(() => failedExporter.exportCsv({ type: 'day', date: '2025-03-09' })),
       'export-failed'
     )
+  })
+})
+
+test('sales reports and PDFs include net transaction totals and tax totals by tax name', async () => {
+  await withSales(async ({ database, products, service, taxes }) => {
+    taxes.save([
+      { name: 'GST', rateBasisPoints: 500 },
+      { name: 'PST', rateBasisPoints: 700 }
+    ])
+    const productId = createProduct(products, {
+      sku: 'TAX-REPORT',
+      name: 'Tax report item',
+      priceCents: 1000
+    })
+    const sale = completeWithPayment(service, [{ productId, quantity: 2 }])
+    setSaleTimestamp(database, sale.sale.id, localTimestamp(2025, 3, 9, 10))
+    const returnItems = [{ productId, quantity: 1, restock: false }]
+    const returnQuote = service.quoteReturn({ reason: 'Partial return', items: returnItems })
+    const returned = service.completeReturn({
+      reason: 'Partial return',
+      items: returnItems,
+      tenders: [{ type: 'credit', amountCents: -returnQuote.totalCents }]
+    })
+    setSaleTimestamp(database, returned.return.id, localTimestamp(2025, 3, 9, 11))
+
+    const period = { type: 'day' as const, date: '2025-03-09' }
+    const report = service.report(period)
+    assert.equal(report.totals.netSubtotalCents, 1000)
+    assert.equal(report.totals.netTaxCents, 120)
+    assert.equal(report.totals.netTotalCents, 1120)
+    assert.deepEqual(report.taxTotals, [
+      { taxName: 'GST', salesTaxCents: 100, returnsTaxCents: -50, netTaxCents: 50 },
+      { taxName: 'PST', salesTaxCents: 140, returnsTaxCents: -70, netTaxCents: 70 }
+    ])
+    assert.equal(
+      report.taxTotals.reduce((sum, tax) => sum + tax.netTaxCents, 0),
+      report.totals.netTaxCents
+    )
+
+    const csv = serializeSalesCsv(report.sales, report.totals)
+    assert.match(csv, /report_total,,,Net,Net subtotal,,,10\.00,,/)
+    assert.match(csv, /report_total,,,Net,Net tax,,,,1\.20,/)
+    assert.match(csv, /report_total,,,Net,Net total,,,,,11\.20/)
+
+    let pdfHtml = ''
+    let pdfFileName = ''
+    const exporter = createSalesExportService(
+      service,
+      async () => true,
+      async (fileName, html) => {
+        pdfFileName = fileName
+        pdfHtml = html
+        return true
+      }
+    )
+    const result = await exporter.exportPdf(period, [])
+    assert.deepEqual(result, { canceled: false, rowCount: 2 })
+    assert.equal(pdfFileName, 'sales-itemized-2025-03-09.pdf')
+    assert.match(pdfHtml, /Itemized sales report/)
+    assert.match(pdfHtml, /<h2>Transactions<\/h2>/)
+    assert.match(pdfHtml, /Net subtotal/)
+    assert.match(pdfHtml, /\$10\.00/)
+    assert.match(pdfHtml, /GST net tax/)
+    assert.match(pdfHtml, /\$0\.50/)
+    assert.match(pdfHtml, /PST net tax/)
+    assert.match(pdfHtml, /\$0\.70/)
+    assert.doesNotMatch(pdfHtml, />Net tax</)
+    assert.match(pdfHtml, /Net total/)
+    assert.match(pdfHtml, /\$11\.20/)
+    assert.match(pdfHtml, /Cash received/)
+    assert.match(pdfHtml, /<span>Cash received<\/span><strong>\$22\.40<\/strong>/)
+    assert.match(pdfHtml, /Debit received/)
+    assert.match(pdfHtml, /Credit received/)
+    assert.match(pdfHtml, /E-transfer received/)
+    assert.match(pdfHtml, /Check received/)
+    assert.match(
+      pdfHtml,
+      /<td>GST<\/td>\s*<td>\$1\.00<\/td>\s*<td>-\$0\.50<\/td>\s*<td>\$0\.50<\/td>/
+    )
+    assert.match(
+      pdfHtml,
+      /<td>PST<\/td>\s*<td>\$1\.40<\/td>\s*<td>-\$0\.70<\/td>\s*<td>\$0\.70<\/td>/
+    )
+
+    const summaryResult = await exporter.exportPdf(period, [], 'summary')
+    assert.deepEqual(summaryResult, { canceled: false, rowCount: 2 })
+    assert.equal(pdfFileName, 'sales-summary-2025-03-09.pdf')
+    assert.match(pdfHtml, /Summary sales report/)
+    assert.doesNotMatch(pdfHtml, /<h2>Transactions<\/h2>/)
+    assert.match(pdfHtml, /Tax totals by type/)
+    assert.match(pdfHtml, /Payments received by tender/)
+    assert.match(pdfHtml, /Item totals for the period/)
+  })
+})
+
+test('PDF item totals allocate tax and split tenders by product and date charge repayments', async () => {
+  await withSales(async ({ database, products, service, taxes }) => {
+    taxes.save([
+      { name: 'GST', rateBasisPoints: 500 },
+      { name: 'PST', rateBasisPoints: 700 }
+    ])
+    const firstProductId = createProduct(products, {
+      sku: 'ITEM-1',
+      name: 'First item',
+      priceCents: 1001
+    })
+    const secondProductId = createProduct(products, {
+      sku: 'ITEM-2',
+      name: 'Second item',
+      priceCents: 2009
+    })
+    const saleQuote = service.quote([
+      { productId: firstProductId, quantity: 1 },
+      { productId: secondProductId, quantity: 1 }
+    ])
+    const checkout = service.completeCheckout({
+      items: [
+        { productId: firstProductId, quantity: 1 },
+        { productId: secondProductId, quantity: 1 }
+      ],
+      tenders: [
+        { type: 'cash', amountCents: 400 },
+        { type: 'debit', amountCents: 500 },
+        { type: 'credit', amountCents: 600 }
+      ],
+      chargeCustomer: {
+        name: 'Morgan Customer',
+        companyName: '',
+        address: '',
+        phoneNumber: '',
+        email: ''
+      }
+    })
+    assert.equal(checkout.sale.chargeAmountCents, saleQuote.totalCents - 1500)
+    setSaleTimestamp(database, checkout.sale.id, '2025-03-09 12:00:00')
+
+    const returnQuote = service.quoteReturn({
+      reason: 'Returned first item',
+      items: [{ productId: firstProductId, quantity: 1, restock: false }]
+    })
+    const returned = service.completeReturn({
+      reason: 'Returned first item',
+      items: [{ productId: firstProductId, quantity: 1, restock: false }],
+      tenders: [{ type: 'cash', amountCents: -returnQuote.totalCents }]
+    })
+    setSaleTimestamp(database, returned.return.id, '2025-03-09 13:00:00')
+
+    service.recordChargePayment({
+      saleId: checkout.sale.id,
+      type: 'etransfer',
+      amountCents: 250
+    })
+    service.recordChargePayment({
+      saleId: checkout.sale.id,
+      type: 'check',
+      amountCents: 200
+    })
+    database
+      .prepare('UPDATE charge_payments SET created_at = ? WHERE payment_type = ?')
+      .run('2025-03-10 10:00:00', 'etransfer')
+    database
+      .prepare('UPDATE charge_payments SET created_at = ? WHERE payment_type = ?')
+      .run('2025-03-10 11:00:00', 'check')
+
+    const period = { type: 'custom' as const, startDate: '2025-03-09', endDate: '2025-03-10' }
+    const report = service.report(period)
+    const financials = service.productsWithFinancialsInPeriod(period, report.sales)
+    assert.deepEqual(
+      financials.products.map((product) => ({
+        name: product.name,
+        netQuantity: product.netQuantity,
+        subtotalCents: product.subtotalCents,
+        taxes: product.taxAmounts.map(({ name, amountCents }) => [name, amountCents]),
+        totalCents: product.totalCents,
+        tenders: product.tenderAmounts
+      })),
+      [
+        {
+          name: 'First item',
+          netQuantity: 0,
+          subtotalCents: 0,
+          taxes: [
+            ['GST', 0],
+            ['PST', 0]
+          ],
+          totalCents: 0,
+          tenders: { cash: -989, debit: 166, credit: 200, charge: 623 }
+        },
+        {
+          name: 'Second item',
+          netQuantity: 1,
+          subtotalCents: 2009,
+          taxes: [
+            ['GST', 101],
+            ['PST', 141]
+          ],
+          totalCents: 2251,
+          tenders: { cash: 268, debit: 334, credit: 400, charge: 1249 }
+        }
+      ]
+    )
+    assert.equal(
+      financials.products.reduce((sum, product) => sum + product.totalCents, 0),
+      2251
+    )
+    assert.equal(
+      financials.products.reduce((sum, product) => sum + product.tenderAmounts.charge, 0),
+      saleQuote.totalCents - 1500
+    )
+    for (const tax of report.taxTotals) {
+      assert.equal(
+        financials.products.reduce(
+          (sum, product) =>
+            sum +
+            (product.taxAmounts.find((itemTax) => itemTax.name === tax.taxName)?.amountCents ?? 0),
+          0
+        ),
+        tax.netTaxCents
+      )
+    }
+    assert.equal(
+      financials.products.reduce((sum, product) => sum + product.tenderAmounts.cash, 0),
+      report.totals.cashNetCents
+    )
+    assert.equal(
+      financials.products.reduce((sum, product) => sum + product.tenderAmounts.debit, 0),
+      report.totals.debitNetCents
+    )
+    assert.equal(
+      financials.products.reduce((sum, product) => sum + product.tenderAmounts.credit, 0),
+      report.totals.creditNetCents
+    )
+    for (const product of financials.products) {
+      assert.equal(
+        Object.values(product.tenderAmounts).reduce((sum, amount) => sum + amount, 0),
+        product.totalCents
+      )
+    }
+    assert.deepEqual(
+      financials.chargeRepayments.map(({ type, amountCents, createdAt }) => [
+        type,
+        amountCents,
+        createdAt
+      ]),
+      [
+        ['etransfer', 250, '2025-03-10 10:00:00'],
+        ['check', 200, '2025-03-10 11:00:00']
+      ]
+    )
+
+    let pdfHtml = ''
+    const exporter = createSalesExportService(
+      service,
+      async () => true,
+      async (_fileName, html) => {
+        pdfHtml = html
+        return true
+      }
+    )
+    await exporter.exportPdf(period, [], 'summary')
+    assert.match(pdfHtml, /<h2>Item totals for the period<\/h2>/)
+    assert.match(pdfHtml, /GST tax/)
+    assert.match(pdfHtml, /PST tax/)
+    assert.match(pdfHtml, /Charge at sale/)
+    assert.match(pdfHtml, /<h2>Charge repayments received in this period<\/h2>/)
+    assert.match(pdfHtml, /E-transfer/)
+    assert.match(pdfHtml, /Check/)
+    assert.match(pdfHtml, /Total repayments/)
+    assert.match(pdfHtml, /10\/03\/25/)
+    assert.match(pdfHtml, /Charge shows the amount left unpaid at sale/)
+    assert.match(pdfHtml, /<td class="number">\$22\.51<\/td>/)
+
+    await exporter.exportPdf(period, [], 'itemized')
+    assert.match(pdfHtml, /Itemized sales report/)
+    assert.match(pdfHtml, /<h2>Transactions<\/h2>/)
+    assert.match(pdfHtml, /GST tax/)
+    assert.match(pdfHtml, /Charge at sale/)
+    assert.match(pdfHtml, /Total repayments/)
+  })
+})
+
+test('sales report reconciles legacy combined tax as unitemized tax', () => {
+  withSales(({ database, products, service, taxes }) => {
+    taxes.save([{ name: 'GST', rateBasisPoints: 500 }])
+    const productId = createProduct(products, {
+      sku: 'LEGACY-TAX',
+      name: 'Legacy tax item',
+      priceCents: 1000
+    })
+    const sale = completeWithPayment(service, [{ productId, quantity: 1 }])
+    setSaleTimestamp(database, sale.sale.id, localTimestamp(2025, 3, 9))
+    database.prepare('DELETE FROM sale_taxes WHERE sale_id = ?').run(sale.sale.id)
+
+    const report = service.report({ type: 'day', date: '2025-03-09' })
+    assert.deepEqual(report.taxTotals, [
+      {
+        taxName: 'Unitemized tax',
+        salesTaxCents: 50,
+        returnsTaxCents: 0,
+        netTaxCents: 50
+      }
+    ])
+    assert.equal(report.taxTotals[0]!.netTaxCents, report.totals.netTaxCents)
   })
 })
 
@@ -1405,7 +1753,7 @@ test('PDF report includes selected summaries, signed transaction details, and es
         items: [{ productId, quantity: 1, restock: false }],
         tenders: [{ type: 'credit', amountCents: 1000 }]
       })
-      setSaleTimestamp(database, returned.return.id, localTimestamp(2025, 3, 9, 11))
+      setSaleTimestamp(database, returned.return.id, localTimestamp(2025, 3, 10, 11))
 
       let savedFileName = ''
       let savedHtml = ''
@@ -1418,24 +1766,33 @@ test('PDF report includes selected summaries, signed transaction details, and es
           return true
         }
       )
-      const result = await exporter.exportPdf({ type: 'day', date: '2025-03-09' }, [
-        'overview',
-        'net'
-      ])
+      const result = await exporter.exportPdf(
+        { type: 'custom', startDate: '2025-03-09', endDate: '2025-03-10' },
+        ['overview', 'net', 'etransfer', 'check']
+      )
 
       assert.deepEqual(result, { canceled: false, rowCount: 2 })
-      assert.equal(savedFileName, 'sales-2025-03-09.pdf')
-      assert.match(savedHtml, /Day · 09\/03\/25/)
+      assert.equal(savedFileName, 'sales-itemized-2025-03-09-to-2025-03-10.pdf')
+      assert.match(savedHtml, /From 09\/03\/25 through 10\/03\/25/)
+      assert.match(savedHtml, /Itemized sales report/)
       assert.match(savedHtml, /Transactions/)
       assert.match(savedHtml, /Net total/)
+      assert.match(savedHtml, /E-transfer received/)
+      assert.match(savedHtml, /Check received/)
       assert.doesNotMatch(savedHtml, /Gross subtotal/)
       assert.match(savedHtml, /Invoice #[^<]+/)
       assert.match(savedHtml, /Return #[^<]+/)
       assert.match(savedHtml, /Damaged &lt;seal&gt; &amp; leaking/)
       assert.match(savedHtml, /Coffee &lt;filter&gt; &amp; mix/)
       assert.match(savedHtml, /SKU&lt;&amp;&gt;/)
-      assert.match(savedHtml, /Net amount \(before tax\)/)
+      assert.match(savedHtml, /Item totals for the period/)
+      assert.match(savedHtml, /Net amount before tax/)
       assert.match(savedHtml, /net quantity/i)
+      assert.match(
+        savedHtml,
+        /<td>Coffee &lt;filter&gt; &amp; mix<\/td>\s*<td>SKU&lt;&amp;&gt;<\/td>\s*<td class="number">1<\/td>\s*<td class="number">\$4\.00<\/td>/
+      )
+      assert.doesNotMatch(savedHtml, /Products by day/)
       assert.match(savedHtml, /-\$10\.00/)
       assert.doesNotMatch(savedHtml, /One day promotion/)
       assert.doesNotMatch(savedHtml, /Damaged <seal>/)
@@ -1459,13 +1816,34 @@ test('PDF export handles empty periods, canceled saves, invalid summary groups, 
     )
     const canceled = await canceledExporter.exportPdf({ type: 'day', date: '2025-03-09' }, [])
     assert.deepEqual(canceled, { canceled: true })
+    assert.match(emptyReportHtml, /Itemized sales report/)
     assert.match(emptyReportHtml, /No transactions in this period/)
     assert.match(emptyReportHtml, /No product details in this period/)
-    assert.doesNotMatch(emptyReportHtml, /<section class="summary-section">/)
+    assert.match(emptyReportHtml, /<section class="summary-section">/)
+    assert.match(emptyReportHtml, /Net subtotal/)
+    assert.match(emptyReportHtml, /Net total/)
+    assert.match(emptyReportHtml, /No tax details in this period/)
+
+    const summaryCanceled = await canceledExporter.exportPdf(
+      { type: 'day', date: '2025-03-09' },
+      [],
+      'summary'
+    )
+    assert.deepEqual(summaryCanceled, { canceled: true })
+    assert.match(emptyReportHtml, /Summary sales report/)
+    assert.doesNotMatch(emptyReportHtml, /<h2>Transactions<\/h2>/)
+    assert.doesNotMatch(emptyReportHtml, /No transactions in this period/)
+    assert.match(emptyReportHtml, /Item totals for the period/)
 
     assertSaleError(
       await toSalesResultAsync(() =>
         canceledExporter.exportPdf({ type: 'day', date: '2025-03-09' }, ['overview', 'bad'])
+      ),
+      'invalid-input'
+    )
+    assertSaleError(
+      await toSalesResultAsync(() =>
+        canceledExporter.exportPdf({ type: 'day', date: '2025-03-09' }, [], 'unknown')
       ),
       'invalid-input'
     )
@@ -1690,6 +2068,35 @@ test('migration backfills historical payment types and original item prices', ()
     database.exec(
       readFileSync(join(process.cwd(), 'src/main/database/migrations/009_sale_charges.sql'), 'utf8')
     )
+    const existingChargeSaleId = Number(
+      database
+        .prepare(
+          `INSERT INTO sales
+             (subtotal_cents, tax_cents, total_cents, payment_method, transaction_number)
+           VALUES (500, 0, 500, 'cash', '20990101-0002')`
+        )
+        .run().lastInsertRowid
+    )
+    const existingChargeId = Number(
+      database
+        .prepare(
+          `INSERT INTO sale_charges (sale_id, customer_name, amount_cents)
+           VALUES (?, 'Legacy Customer', 500)`
+        )
+        .run(existingChargeSaleId).lastInsertRowid
+    )
+    database
+      .prepare(
+        `INSERT INTO charge_payments (charge_id, payment_type, amount_cents, created_at)
+         VALUES (?, 'cash', 100, '2025-01-01 12:00:00')`
+      )
+      .run(existingChargeId)
+    database.exec(
+      readFileSync(
+        join(process.cwd(), 'src/main/database/migrations/010_charge_payment_tenders.sql'),
+        'utf8'
+      )
+    )
     const historicalSales = createSalesService(createSalesRepository(database))
     assert.equal(historicalSales.getById(zeroSale).paymentMethod, 'cash')
     const migratedSales = createSalesService(createSalesRepository(database))
@@ -1698,6 +2105,27 @@ test('migration backfills historical payment types and original item prices', ()
       migratedSales.getById(legacyBrandSale).payments.map(({ type }) => type),
       ['mastercard', 'visa']
     )
+    assert.deepEqual(
+      migratedSales
+        .getById(existingChargeSaleId)
+        .charge?.payments.map(({ type, amountCents }) => [type, amountCents]),
+      [['cash', 100]]
+    )
+    migratedSales.recordChargePayment({
+      saleId: existingChargeSaleId,
+      type: 'etransfer',
+      amountCents: 150
+    })
+    migratedSales.recordChargePayment({
+      saleId: existingChargeSaleId,
+      type: 'check',
+      amountCents: 250
+    })
+    assert.deepEqual(
+      migratedSales.getById(existingChargeSaleId).charge?.payments.map(({ type }) => type),
+      ['cash', 'etransfer', 'check']
+    )
+    assert.deepEqual(database.pragma('foreign_key_check'), [])
 
     const creditSale = Number(
       database

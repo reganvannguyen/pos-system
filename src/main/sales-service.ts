@@ -3,6 +3,7 @@ import type {
   CheckoutQuote,
   ChargeCustomer,
   ChargePayment,
+  ChargePaymentTenderType,
   DailyProductSummary,
   ReturnItemInput,
   ReturnQuote,
@@ -15,10 +16,13 @@ import type {
   TenderInput
 } from '../shared/pos-api'
 import type {
+  ChargePaymentSummaryRecord,
+  ProductReportLineRecord,
   ReturnQuoteRecord,
   DailyProductSummaryRecord,
   SaleDetailRecord,
   SaleQuoteRecord,
+  SaleTaxReportRecord,
   SaleSummaryRecord,
   SalesRepository
 } from './database/repositories/sales'
@@ -38,6 +42,38 @@ export class SalesServiceError extends Error {
 export interface DailyProductBreakdown {
   date: string
   products: DailyProductSummary[]
+}
+
+export interface SalesReportProductTotal {
+  productId: number | null
+  sku: string
+  name: string
+  netQuantity: number
+  subtotalCents: number
+  taxAmounts: Array<{ name: string; amountCents: number }>
+  totalCents: number
+  tenderAmounts: Record<'cash' | 'debit' | 'credit' | 'charge', number>
+}
+
+export interface SalesReportChargeRepayment {
+  type: ChargePaymentTenderType
+  amountCents: number
+  createdAt: string
+}
+
+export interface SalesReportProductDetails {
+  products: SalesReportProductTotal[]
+  chargeRepayments: SalesReportChargeRepayment[]
+}
+
+interface MutableSalesReportProductTotal {
+  productId: number | null
+  sku: string
+  name: string
+  netQuantity: bigint
+  subtotalCents: bigint
+  taxAmounts: Map<string, bigint>
+  tenderAmounts: Record<'cash' | 'debit' | 'credit' | 'charge', bigint>
 }
 
 export function createSalesService(repository: SalesRepository) {
@@ -65,8 +101,11 @@ export function createSalesService(repository: SalesRepository) {
         throw new SalesServiceError('invalid-input', 'Enter valid charge payment details.')
       }
       const saleId = parseId(value.saleId)
-      if (value.type !== 'cash' && value.type !== 'debit' && value.type !== 'credit') {
-        throw new SalesServiceError('invalid-input', 'Choose Cash, Debit, or Credit.')
+      if (!isChargePaymentTenderType(value.type)) {
+        throw new SalesServiceError(
+          'invalid-input',
+          'Choose Cash, Debit, Credit, E-Transfer, or Check.'
+        )
       }
       if (
         typeof value.amountCents !== 'number' ||
@@ -106,6 +145,22 @@ export function createSalesService(repository: SalesRepository) {
     report(value: unknown): SalesReport {
       const period = resolveSalesPeriod(value)
       const transactions = repository.listInRange(period.startInclusive, period.endExclusive)
+      const taxLinesBySale = new Map<number, SaleTaxReportRecord[]>()
+      for (const taxLine of repository.taxLinesInRange(
+        period.startInclusive,
+        period.endExclusive
+      )) {
+        const lines = taxLinesBySale.get(taxLine.sale_id) ?? []
+        lines.push(taxLine)
+        taxLinesBySale.set(taxLine.sale_id, lines)
+      }
+      const taxTotalsByName = new Map<string, { sales: bigint; returns: bigint }>()
+      const addTaxTotal = (name: string, amount: bigint, isReturn: boolean): void => {
+        const current = taxTotalsByName.get(name) ?? { sales: 0n, returns: 0n }
+        if (isReturn) current.returns -= amount
+        else current.sales += amount
+        taxTotalsByName.set(name, current)
+      }
       let saleCount = 0
       let returnCount = 0
       let grossSubtotal = 0n
@@ -120,9 +175,20 @@ export function createSalesService(repository: SalesRepository) {
       let debitRefunded = 0n
       let creditReceived = 0n
       let creditRefunded = 0n
+      let etransferReceived = 0n
+      let checkReceived = 0n
 
       for (const transaction of transactions) {
         const isReturn = transaction.transaction_type === 'return'
+        let itemizedTax = 0n
+        for (const taxLine of taxLinesBySale.get(transaction.id) ?? []) {
+          const amount = BigInt(taxLine.tax_cents)
+          itemizedTax += amount
+          addTaxTotal(taxLine.tax_name, amount, isReturn)
+        }
+        const unitemizedTax = BigInt(transaction.tax_cents) - itemizedTax
+        if (unitemizedTax !== 0n) addTaxTotal('Unitemized tax', unitemizedTax, isReturn)
+
         if (isReturn) {
           returnCount += 1
           returnsSubtotal += BigInt(transaction.subtotal_cents)
@@ -157,7 +223,10 @@ export function createSalesService(repository: SalesRepository) {
       )) {
         if (payment.payment_type === 'cash') cashReceived += BigInt(payment.amount_cents)
         else if (payment.payment_type === 'debit') debitReceived += BigInt(payment.amount_cents)
-        else creditReceived += BigInt(payment.amount_cents)
+        else if (payment.payment_type === 'credit') creditReceived += BigInt(payment.amount_cents)
+        else if (payment.payment_type === 'etransfer') {
+          etransferReceived += BigInt(payment.amount_cents)
+        } else checkReceived += BigInt(payment.amount_cents)
       }
 
       const cardReceived = debitReceived + creditReceived
@@ -168,6 +237,14 @@ export function createSalesService(repository: SalesRepository) {
       returnsTotal = -returnsTotal
       return {
         sales: transactions.map(toSaleSummary),
+        taxTotals: [...taxTotalsByName.entries()]
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([taxName, tax]) => ({
+            taxName,
+            salesTaxCents: toSafeReportTotal(tax.sales),
+            returnsTaxCents: toSafeReportTotal(tax.returns),
+            netTaxCents: toSafeReportTotal(tax.sales + tax.returns)
+          })),
         totals: {
           transactionCount: transactions.length,
           saleCount,
@@ -192,7 +269,9 @@ export function createSalesService(repository: SalesRepository) {
           creditNetCents: toSafeReportTotal(creditReceived - creditRefunded),
           cardReceivedCents: toSafeReportTotal(cardReceived),
           cardRefundedCents: toSafeReportTotal(cardRefunded),
-          cardNetCents: toSafeReportTotal(cardReceived - cardRefunded)
+          cardNetCents: toSafeReportTotal(cardReceived - cardRefunded),
+          etransferReceivedCents: toSafeReportTotal(etransferReceived),
+          checkReceivedCents: toSafeReportTotal(checkReceived)
         }
       }
     },
@@ -202,6 +281,150 @@ export function createSalesService(repository: SalesRepository) {
       return repository
         .productTotalsInRange(period.startInclusive, period.endExclusive)
         .map(toDailyProductSummary)
+    },
+
+    productsInPeriod(value: unknown): DailyProductSummary[] {
+      const period = resolveSalesPeriod(value)
+      return repository
+        .productTotalsInRange(period.startInclusive, period.endExclusive)
+        .map(toDailyProductSummary)
+    },
+
+    productsWithFinancialsInPeriod(
+      value: unknown,
+      transactions: SaleSummary[]
+    ): SalesReportProductDetails {
+      const period = resolveSalesPeriod(value)
+      const lines = repository.productLinesInRange(period.startInclusive, period.endExclusive)
+      const linesBySaleId = new Map<number, ProductReportLineRecord[]>()
+      for (const line of lines) {
+        const saleLines = linesBySaleId.get(line.sale_id) ?? []
+        saleLines.push(line)
+        linesBySaleId.set(line.sale_id, saleLines)
+      }
+
+      const taxLinesBySaleId = new Map<number, SaleTaxReportRecord[]>()
+      for (const tax of repository.taxLinesInRange(period.startInclusive, period.endExclusive)) {
+        const saleTaxes = taxLinesBySaleId.get(tax.sale_id) ?? []
+        saleTaxes.push(tax)
+        taxLinesBySaleId.set(tax.sale_id, saleTaxes)
+      }
+
+      const productTotals = new Map<string, MutableSalesReportProductTotal>()
+      for (const transaction of transactions) {
+        const saleLines = linesBySaleId.get(transaction.id) ?? []
+        if (saleLines.length === 0) continue
+        const weights = saleLines.map((line) => BigInt(line.line_total_cents))
+        const isReturn = transaction.transactionType === 'return'
+        const signedTaxes = new Map<string, bigint>()
+        let itemizedTaxCents = 0n
+        for (const tax of taxLinesBySaleId.get(transaction.id) ?? []) {
+          const amount = BigInt(tax.tax_cents)
+          itemizedTaxCents += amount
+          signedTaxes.set(
+            tax.tax_name,
+            (signedTaxes.get(tax.tax_name) ?? 0n) + (isReturn ? -amount : amount)
+          )
+        }
+        const unitemizedTaxCents = BigInt(Math.abs(transaction.taxCents)) - itemizedTaxCents
+        if (unitemizedTaxCents !== 0n) {
+          signedTaxes.set(
+            'Unitemized tax',
+            (isReturn ? -unitemizedTaxCents : unitemizedTaxCents) +
+              (signedTaxes.get('Unitemized tax') ?? 0n)
+          )
+        }
+
+        const taxAllocations = new Map(
+          [...signedTaxes].map(([name, amount]) => [name, allocateCents(amount, weights)])
+        )
+        const tenderAllocations = new Map<'cash' | 'debit' | 'credit', bigint[]>()
+        for (const payment of transaction.payments) {
+          const type = reportTenderType(payment.type)
+          tenderAllocations.set(
+            type,
+            addAllocations(
+              tenderAllocations.get(type),
+              allocateCents(absoluteCents(BigInt(payment.amountAppliedCents)), weights)
+            )
+          )
+        }
+        const chargeAllocations = allocateCents(BigInt(transaction.chargeAmountCents ?? 0), weights)
+        const sign = isReturn ? -1n : 1n
+        const rowTotals = saleLines.map(
+          (line, index) =>
+            BigInt(line.line_total_cents) +
+            [...taxAllocations.values()].reduce(
+              (sum, allocations) => sum + (allocations[index] ?? 0n) * sign,
+              0n
+            )
+        )
+        reconcileTenderAllocations(tenderAllocations, chargeAllocations, rowTotals)
+
+        saleLines.forEach((line, index) => {
+          const key = reportProductKey(line)
+          let total = productTotals.get(key)
+          if (!total) {
+            total = {
+              productId: line.product_id,
+              sku: line.sku,
+              name: line.product_name,
+              netQuantity: 0n,
+              subtotalCents: 0n,
+              taxAmounts: new Map(),
+              tenderAmounts: { cash: 0n, debit: 0n, credit: 0n, charge: 0n }
+            }
+            productTotals.set(key, total)
+          }
+          total.netQuantity += sign * BigInt(line.quantity)
+          total.subtotalCents += sign * BigInt(line.line_total_cents)
+          for (const [name, allocations] of taxAllocations) {
+            total.taxAmounts.set(
+              name,
+              (total.taxAmounts.get(name) ?? 0n) + (allocations[index] ?? 0n)
+            )
+          }
+          for (const [type, allocations] of tenderAllocations) {
+            total.tenderAmounts[type] += (allocations[index] ?? 0n) * sign
+          }
+          total.tenderAmounts.charge += (chargeAllocations[index] ?? 0n) * sign
+        })
+      }
+
+      const products = [...productTotals.values()]
+        .sort(
+          (left, right) => left.name.localeCompare(right.name) || left.sku.localeCompare(right.sku)
+        )
+        .map((product): SalesReportProductTotal => {
+          const taxAmounts = [...product.taxAmounts]
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([name, amount]) => ({ name, amountCents: toSafeReportTotal(amount) }))
+          const subtotalCents = toSafeReportTotal(product.subtotalCents)
+          const taxTotalCents = [...product.taxAmounts.values()].reduce(
+            (sum, amount) => sum + amount,
+            0n
+          )
+          return {
+            productId: product.productId,
+            sku: product.sku,
+            name: product.name,
+            netQuantity: toSafeReportTotal(product.netQuantity),
+            subtotalCents,
+            taxAmounts,
+            totalCents: toSafeReportTotal(product.subtotalCents + taxTotalCents),
+            tenderAmounts: {
+              cash: toSafeReportTotal(product.tenderAmounts.cash),
+              debit: toSafeReportTotal(product.tenderAmounts.debit),
+              credit: toSafeReportTotal(product.tenderAmounts.credit),
+              charge: toSafeReportTotal(product.tenderAmounts.charge)
+            }
+          }
+        })
+
+      const chargeRepayments = repository
+        .chargePaymentsInRange(period.startInclusive, period.endExclusive)
+        .map(toSalesReportChargeRepayment)
+      return { products, chargeRepayments }
     },
 
     productsByDayInPeriod(value: unknown): DailyProductBreakdown[] {
@@ -450,6 +673,16 @@ function parseId(value: unknown): number {
   return value
 }
 
+function isChargePaymentTenderType(value: unknown): value is ChargePaymentTenderType {
+  return (
+    value === 'cash' ||
+    value === 'debit' ||
+    value === 'credit' ||
+    value === 'etransfer' ||
+    value === 'check'
+  )
+}
+
 function toQuote(value: SaleQuoteRecord): CheckoutQuote {
   return {
     items: value.items.map((item) => ({
@@ -553,6 +786,99 @@ function toDailyProductSummary(value: DailyProductSummaryRecord): DailyProductSu
     netQuantity: value.net_quantity,
     netAmountCents: value.net_amount_cents
   }
+}
+
+function toSalesReportChargeRepayment(
+  value: ChargePaymentSummaryRecord
+): SalesReportChargeRepayment {
+  return {
+    type: value.payment_type,
+    amountCents: value.amount_cents,
+    createdAt: value.created_at
+  }
+}
+
+function reportProductKey(line: ProductReportLineRecord): string {
+  return line.product_id === null
+    ? `snapshot:${JSON.stringify([line.sku, line.product_name])}`
+    : `product:${line.product_id}`
+}
+
+function reportTenderType(
+  type: SaleSummary['payments'][number]['type']
+): 'cash' | 'debit' | 'credit' {
+  if (type === 'cash') return 'cash'
+  return type === 'debit' ? 'debit' : 'credit'
+}
+
+function addAllocations(current: bigint[] | undefined, incoming: bigint[]): bigint[] {
+  return current ? current.map((amount, index) => amount + (incoming[index] ?? 0n)) : incoming
+}
+
+function absoluteCents(amount: bigint): bigint {
+  return amount < 0n ? -amount : amount
+}
+
+function reconcileTenderAllocations(
+  tenders: Map<'cash' | 'debit' | 'credit', bigint[]>,
+  charge: bigint[],
+  rowTotals: readonly bigint[]
+): void {
+  const allocations = [
+    ...(['cash', 'debit', 'credit'] as const).flatMap((type) => {
+      const amounts = tenders.get(type)
+      return amounts ? [amounts] : []
+    }),
+    charge
+  ]
+  const allocatedTotal = allocations.reduce(
+    (total, amounts) => total + amounts.reduce((sum, amount) => sum + amount, 0n),
+    0n
+  )
+  if (allocatedTotal !== rowTotals.reduce((sum, amount) => sum + amount, 0n)) return
+
+  const rowAllocated = rowTotals.map((_, index) =>
+    allocations.reduce((sum, amounts) => sum + (amounts[index] ?? 0n), 0n)
+  )
+  for (let receiver = 0; receiver < rowTotals.length; receiver += 1) {
+    while ((rowAllocated[receiver] ?? 0n) < (rowTotals[receiver] ?? 0n)) {
+      const donor = rowTotals.findIndex(
+        (_, index) => (rowAllocated[index] ?? 0n) > (rowTotals[index] ?? 0n)
+      )
+      if (donor < 0) return
+      const tender = allocations.find((amounts) => (amounts[donor] ?? 0n) > 0n)
+      if (!tender) return
+      tender[donor] = (tender[donor] ?? 0n) - 1n
+      tender[receiver] = (tender[receiver] ?? 0n) + 1n
+      rowAllocated[donor] = (rowAllocated[donor] ?? 0n) - 1n
+      rowAllocated[receiver] = (rowAllocated[receiver] ?? 0n) + 1n
+    }
+  }
+}
+
+function allocateCents(amount: bigint, weights: readonly bigint[]): bigint[] {
+  if (weights.length === 0) return []
+  const positiveWeights = weights.some((weight) => weight > 0n) ? weights : weights.map(() => 1n)
+  const totalWeight = positiveWeights.reduce((sum, weight) => sum + weight, 0n)
+  const sign = amount < 0n ? -1n : 1n
+  const absoluteAmount = amount < 0n ? -amount : amount
+  const remainders: Array<{ index: number; remainder: bigint }> = []
+  const allocated = positiveWeights.map((weight, index) => {
+    const numerator = absoluteAmount * weight
+    remainders.push({ index, remainder: numerator % totalWeight })
+    return numerator / totalWeight
+  })
+  const unallocated = Number(absoluteAmount - allocated.reduce((sum, part) => sum + part, 0n))
+  remainders
+    .sort((left, right) => {
+      if (left.remainder === right.remainder) return left.index - right.index
+      return left.remainder > right.remainder ? -1 : 1
+    })
+    .slice(0, unallocated)
+    .forEach(({ index }) => {
+      allocated[index] = (allocated[index] ?? 0n) + 1n
+    })
+  return allocated.map((part) => sign * part)
 }
 
 function toSaleDetail(value: SaleDetailRecord): SaleDetail {

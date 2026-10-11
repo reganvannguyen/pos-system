@@ -79,28 +79,28 @@ export function renderReceiptHtml(
   <style>
     @page { margin: 0; }
     * { box-sizing: border-box; }
-    body { width: 58mm; margin: 0; padding: 5mm; color: #111; font: 10px/1.3 "Courier New", monospace; }
+    body { width: 100%; max-width: 58mm; margin: 0 auto; padding: 4mm; color: #000; font: 600 11px/1.35 Consolas, "Courier New", monospace; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     header { text-align: center; margin-bottom: 9px; }
-    h1 { margin: 0 0 4px; font-size: 16px; overflow-wrap: anywhere; }
+    h1 { margin: 0 0 4px; font-size: 17px; overflow-wrap: anywhere; }
     p { margin: 2px 0; overflow-wrap: anywhere; }
-    .muted { color: #333; }
-    .separator { border-top: 1px dashed #333; margin: 7px 0; }
+    .muted { color: #000; }
+    .separator { border-top: 1px dashed #000; margin: 7px 0; }
     .invoice-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
     .invoice-meta p:first-child { grid-column: 1 / -1; font-weight: 700; }
     table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-    th { padding: 4px 0; border-top: 1px dashed #333; border-bottom: 1px dashed #333; text-align: left; font-size: 8px; }
-    td { padding: 5px 1px; vertical-align: top; overflow-wrap: anywhere; }
-    th:nth-child(1), td:nth-child(1) { width: 36%; }
+    th { padding: 4px 0; border-top: 1px dashed #000; border-bottom: 1px dashed #000; text-align: left; font-size: 9px; }
+    td { padding: 5px 0; vertical-align: top; overflow-wrap: anywhere; }
+    th:nth-child(1), td:nth-child(1) { width: 30%; }
     th:nth-child(2), td:nth-child(2) { width: 8%; text-align: center; }
-    th:nth-child(3), td:nth-child(3) { width: 28%; text-align: right; }
-    th:nth-child(4), td:nth-child(4) { width: 28%; text-align: right; }
-    .description small { display: block; color: #444; font-size: 8px; }
-    .price, .line-total { white-space: nowrap; }
+    th:nth-child(3), td:nth-child(3) { width: 31%; text-align: right; }
+    th:nth-child(4), td:nth-child(4) { width: 31%; text-align: right; }
+    .description small { display: block; color: #000; font-size: 9px; }
+    .price, .line-total { font-size: 10px; white-space: nowrap; }
     .totals { margin-top: 7px; padding-top: 6px; border-top: 1px dashed #333; }
     .totals div { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
     .total { margin-top: 4px; padding-top: 5px !important; border-top: 1px solid #111; font-weight: 700; }
     .payment-details { margin-top: 7px; }
-    .customer-details { margin: 5px 0 9px; padding: 6px 0; border-top: 1px dashed #333; border-bottom: 1px dashed #333; }
+    .customer-details { margin: 5px 0 9px; padding: 6px 0; border-top: 1px dashed #000; border-bottom: 1px dashed #000; }
     .customer-details strong { display: block; margin-bottom: 3px; }
     footer { margin-top: 9px; padding-top: 7px; border-top: 1px dashed #333; text-align: center; }
     .preview-note { color: #555; font-size: 9px; }

@@ -1,8 +1,11 @@
 import type {
+  BusinessSettings,
   SalesCsvExportResult,
   SalesPdfExportResult,
   SaleSummary,
-  SalesSummaryGroup
+  SalesReportTotals,
+  SalesSummaryGroup,
+  SalesPdfReportType
 } from '../shared/pos-api'
 import { isSalesSummaryGroup, recognizedSalesSummaryGroups } from '../shared/sales-report-summary'
 import type { SalesService } from './sales-service'
@@ -12,11 +15,13 @@ import { renderSalesReportPdfHtml } from './sales-report-pdf'
 
 export type SaveSalesCsvFile = (fileName: string, contents: string) => Promise<boolean>
 export type SaveSalesPdfFile = (fileName: string, html: string) => Promise<boolean>
+export type GetSalesReportBusinessDetails = () => BusinessSettings
 
 export function createSalesExportService(
   sales: SalesService,
   saveCsvFile: SaveSalesCsvFile,
-  savePdfFile?: SaveSalesPdfFile
+  savePdfFile?: SaveSalesPdfFile,
+  getBusinessDetails?: GetSalesReportBusinessDetails
 ) {
   return {
     async exportCsv(period: unknown): Promise<SalesCsvExportResult> {
@@ -25,7 +30,7 @@ export function createSalesExportService(
 
       let saved: boolean
       try {
-        saved = await saveCsvFile(fileName, serializeSalesCsv(report.sales))
+        saved = await saveCsvFile(fileName, serializeSalesCsv(report.sales, report.totals))
       } catch {
         throw new SalesServiceError(
           'export-failed',
@@ -36,24 +41,34 @@ export function createSalesExportService(
       return saved ? { canceled: false, rowCount: report.sales.length } : { canceled: true }
     },
 
-    async exportPdf(period: unknown, summaryGroupsValue: unknown): Promise<SalesPdfExportResult> {
+    async exportPdf(
+      period: unknown,
+      summaryGroupsValue: unknown,
+      reportTypeValue?: unknown
+    ): Promise<SalesPdfExportResult> {
       if (!savePdfFile) {
         throw new SalesServiceError('export-failed', 'PDF export is not available.')
       }
 
       const summaryGroups = parseSummaryGroups(summaryGroupsValue)
+      const reportType = parsePdfReportType(reportTypeValue)
       const report = sales.report(period)
-      const productsByDay = sales.productsByDayInPeriod(period)
+      const productDetails = sales.productsWithFinancialsInPeriod(period, report.sales)
       const { fileName } = resolveSalesPeriod(period)
-      const pdfFileName = fileName.replace(/\.csv$/i, '.pdf')
+      const pdfFileName = fileName
+        .replace(/^sales-/i, `sales-${reportType}-`)
+        .replace(/\.csv$/i, '.pdf')
 
       let saved: boolean
       try {
+        const businessDetails = getBusinessDetails?.()
         const html = renderSalesReportPdfHtml({
           periodLabel: formatPeriodLabel(period),
           report,
           summaryGroups,
-          productsByDay
+          ...productDetails,
+          reportType,
+          businessDetails
         })
         saved = await savePdfFile(pdfFileName, html)
       } catch {
@@ -66,6 +81,12 @@ export function createSalesExportService(
       return saved ? { canceled: false, rowCount: report.sales.length } : { canceled: true }
     }
   }
+}
+
+function parsePdfReportType(value: unknown): SalesPdfReportType {
+  if (value === undefined) return 'itemized'
+  if (value === 'summary' || value === 'itemized') return value
+  throw new SalesServiceError('invalid-input', 'Choose Summary sales or Itemized.')
 }
 
 function parseSummaryGroups(value: unknown): SalesSummaryGroup[] {
@@ -105,7 +126,7 @@ function formatDateInput(value: unknown): string {
   return `${day}/${month}/${year.slice(-2)}`
 }
 
-export function serializeSalesCsv(sales: SaleSummary[]): string {
+export function serializeSalesCsv(sales: SaleSummary[], totals?: SalesReportTotals): string {
   const headers = [
     'transaction_type',
     'transaction_number',
@@ -149,6 +170,56 @@ export function serializeSalesCsv(sales: SaleSummary[]): string {
     formatCents(sale.taxCents),
     formatCents(sale.totalCents)
   ])
+
+  if (totals) {
+    rows.push(
+      ...[
+        [
+          'report_total',
+          '',
+          '',
+          'Net',
+          'Net subtotal',
+          '',
+          '',
+          formatCents(totals.netSubtotalCents),
+          '',
+          ''
+        ],
+        ['report_total', '', '', 'Net', 'Net tax', '', '', '', formatCents(totals.netTaxCents), ''],
+        [
+          'report_total',
+          '',
+          '',
+          'Net',
+          'Net total',
+          '',
+          '',
+          '',
+          '',
+          formatCents(totals.netTotalCents)
+        ]
+      ],
+      ...[
+        ['Cash received', totals.cashReceivedCents],
+        ['Debit received', totals.debitReceivedCents],
+        ['Credit received', totals.creditReceivedCents],
+        ['E-transfer received', totals.etransferReceivedCents],
+        ['Check received', totals.checkReceivedCents]
+      ].map(([label, amount]) => [
+        'report_total',
+        '',
+        '',
+        String(label).replace(' received', ''),
+        String(label),
+        '',
+        '',
+        '',
+        '',
+        formatCents(Number(amount))
+      ])
+    )
+  }
 
   return [headers, ...rows].map((row) => row.map(escapeCsvField).join(',')).join('\r\n')
 }

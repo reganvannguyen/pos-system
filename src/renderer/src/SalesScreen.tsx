@@ -5,8 +5,9 @@ import type {
   SaleDetail,
   SaleSummary,
   SalesPeriod,
+  SalesPdfReportType,
   SalesReport,
-  TenderType
+  ChargePaymentTenderType
 } from '../../shared/pos-api'
 import { centsInput, parseCadCents, tenderLabel } from './checkout'
 import {
@@ -177,6 +178,7 @@ function SalesScreen(): React.JSX.Element {
   const [loadingDailyProducts, setLoadingDailyProducts] = useState<Record<string, boolean>>({})
   const [dailyProductErrors, setDailyProductErrors] = useState<Record<string, string>>({})
   const [exportFormat, setExportFormat] = useState<null | 'csv' | 'pdf'>(null)
+  const [reportDialogOpen, setReportDialogOpen] = useState(false)
   const [error, setError] = useState('')
   const [detailError, setDetailError] = useState('')
   const [exportStatus, setExportStatus] = useState('')
@@ -300,7 +302,9 @@ function SalesScreen(): React.JSX.Element {
         setExportStatus(result.error.message)
         setExportError(true)
       } else if (!result.data.canceled) {
-        setExportStatus(`Exported ${result.data.rowCount} transactions to CSV.`)
+        setExportStatus(
+          `Exported a CSV report with ${result.data.rowCount} transactions and tender totals.`
+        )
         setExportError(false)
       }
     } catch {
@@ -311,11 +315,11 @@ function SalesScreen(): React.JSX.Element {
     }
   }
 
-  async function exportPdf(): Promise<void> {
+  async function exportPdf(reportType: SalesPdfReportType): Promise<void> {
     if (exportFormat || !report) return
     setExportFormat('pdf')
     try {
-      const result = await window.pos.sales.exportPdf(period, summaryGroups)
+      const result = await window.pos.sales.exportPdf(period, summaryGroups, reportType)
       if (!result.ok) {
         setExportStatus(result.error.message)
         setExportError(true)
@@ -505,9 +509,9 @@ function SalesScreen(): React.JSX.Element {
                 className="secondary-button sales-export-button"
                 type="button"
                 disabled={loading || !report || exportFormat !== null}
-                onClick={() => void exportPdf()}
+                onClick={() => setReportDialogOpen(true)}
               >
-                {exportFormat === 'pdf' ? 'Preparing PDF…' : 'Export PDF'}
+                {exportFormat === 'pdf' ? 'Preparing PDF…' : 'Generate report'}
               </button>
             </div>
           </div>
@@ -525,7 +529,7 @@ function SalesScreen(): React.JSX.Element {
             <>
               <div
                 className="sales-report-summary"
-                aria-label={`Transactions, sales, returns, cash net, debit net, credit net, net subtotal, net tax, and net total${summaryGroups.length ? `, plus ${summaryPickerText(summaryGroups)}` : ''}`}
+                aria-label={`Transactions, sales, returns, cash net, debit net, credit net, e-transfer received, check received, net subtotal, net tax, and net total${summaryGroups.length ? `, plus ${summaryPickerText(summaryGroups)}` : ''}`}
               >
                 {getSalesReportDisplaySections(report.totals, summaryGroups).map((section) => (
                   <section
@@ -744,7 +748,78 @@ function SalesScreen(): React.JSX.Element {
           </div>
         </>
       )}
+      {reportDialogOpen && (
+        <SalesReportTypeDialog
+          onCancel={() => setReportDialogOpen(false)}
+          onSelect={(reportType) => {
+            setReportDialogOpen(false)
+            void exportPdf(reportType)
+          }}
+        />
+      )}
     </section>
+  )
+}
+
+interface SalesReportTypeDialogProps {
+  onCancel: () => void
+  onSelect: (reportType: SalesPdfReportType) => void
+}
+
+function SalesReportTypeDialog({
+  onCancel,
+  onSelect
+}: SalesReportTypeDialogProps): React.JSX.Element {
+  const dialogRef = useRef<HTMLDialogElement>(null)
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (dialog && !dialog.open) dialog.showModal()
+    return () => {
+      if (dialog?.open) dialog.close()
+    }
+  }, [])
+
+  return (
+    <dialog
+      className="product-dialog sales-report-type-dialog"
+      ref={dialogRef}
+      aria-labelledby="sales-report-type-title"
+      onCancel={(event) => {
+        event.preventDefault()
+        onCancel()
+      }}
+    >
+      <div className="dialog-heading">
+        <div>
+          <p className="eyebrow">PDF report</p>
+          <h2 id="sales-report-type-title">Choose a report type</h2>
+        </div>
+        <button
+          className="dialog-close-button"
+          type="button"
+          aria-label="Close report options"
+          onClick={onCancel}
+        >
+          ×
+        </button>
+      </div>
+      <div className="sales-report-type-options">
+        <button type="button" className="secondary-button" onClick={() => onSelect('summary')}>
+          <strong>Summary sales</strong>
+          <span>Totals, payment methods, tax breakdown, and item totals.</span>
+        </button>
+        <button type="button" className="secondary-button" onClick={() => onSelect('itemized')}>
+          <strong>Itemized</strong>
+          <span>The same summary plus every sale and return.</span>
+        </button>
+        <div className="dialog-actions">
+          <button className="secondary-button" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </dialog>
   )
 }
 
@@ -1056,7 +1131,7 @@ function ChargePaymentDialog({
   onUpdated
 }: ChargePaymentDialogProps): React.JSX.Element {
   const dialogRef = useRef<HTMLDialogElement>(null)
-  const [type, setType] = useState<TenderType>('cash')
+  const [type, setType] = useState<ChargePaymentTenderType>('cash')
   const [amount, setAmount] = useState(centsInput(sale.charge?.balanceCents ?? 0))
   const [working, setWorking] = useState(false)
   const [error, setError] = useState('')
@@ -1131,10 +1206,15 @@ function ChargePaymentDialog({
         <div className="checkout-confirmation price-override-fields">
           <label>
             <span>Payment method</span>
-            <select value={type} onChange={(event) => setType(event.target.value as TenderType)}>
+            <select
+              value={type}
+              onChange={(event) => setType(event.target.value as ChargePaymentTenderType)}
+            >
               <option value="cash">Cash</option>
               <option value="debit">Debit</option>
               <option value="credit">Credit</option>
+              <option value="etransfer">E-transfer</option>
+              <option value="check">Check</option>
             </select>
           </label>
           <label>

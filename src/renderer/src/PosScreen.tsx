@@ -31,6 +31,7 @@ import {
   nextCartLineIndex,
   nextDirectionalFocusIndex,
   nextPaymentMethodIndex,
+  resolvePaymentMethodShortcut,
   resolveRegisterShortcut,
   shouldPreserveNativeArrow,
   shouldUnfocusSkuOnEscape
@@ -1592,6 +1593,12 @@ function PaymentMethodPickerDialog({
   const methods: Array<TenderType | 'charge'> = isReturn
     ? ['cash', 'debit', 'credit']
     : ['cash', 'debit', 'credit', 'charge']
+  const shortcutByMethod: Record<TenderType | 'charge', string> = {
+    cash: '1',
+    credit: '2',
+    charge: '3',
+    debit: '4'
+  }
 
   useEffect(() => {
     const dialog = dialogRef.current
@@ -1605,6 +1612,21 @@ function PaymentMethodPickerDialog({
   }, [])
 
   function handlePickerKeyDown(event: React.KeyboardEvent<HTMLDialogElement>): void {
+    if (
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      !event.repeat
+    ) {
+      const method = resolvePaymentMethodShortcut(event.key, methods)
+      if (method) {
+        event.preventDefault()
+        onSelect(method)
+        return
+      }
+    }
+
     const nextIndex = nextPaymentMethodIndex(focusedMethodIndex, event.key, methods.length)
     if (nextIndex === null) return
     event.preventDefault()
@@ -1649,15 +1671,21 @@ function PaymentMethodPickerDialog({
               }}
               tabIndex={index === focusedMethodIndex ? 0 : -1}
               type="button"
+              aria-label={`${tenderLabel(type)}, shortcut ${shortcutByMethod[type]}`}
               onFocus={() => setFocusedMethodIndex(index)}
               onClick={() => onSelect(type)}
             >
-              {tenderLabel(type)}
+              <span>{tenderLabel(type)}</span>
+              <kbd>{shortcutByMethod[type]}</kbd>
             </button>
           ))}
         </div>
         <p className="payment-method-picker-hint" id="payment-method-keyboard-hint">
-          Use ← and → to choose a method; ↑ and ↓ move between controls. Press Enter to continue.
+          Use ← and → to choose a method; ↑ and ↓ move between controls. Press Enter to continue, or{' '}
+          {methods
+            .map((type) => `${shortcutByMethod[type]} for ${tenderLabel(type)}`)
+            .join(', ')}
+          .
         </p>
       </div>
       <div className="dialog-actions checkout-dialog-actions">
