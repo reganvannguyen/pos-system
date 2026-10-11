@@ -1612,13 +1612,7 @@ function PaymentMethodPickerDialog({
   }, [])
 
   function handlePickerKeyDown(event: React.KeyboardEvent<HTMLDialogElement>): void {
-    if (
-      !event.altKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      !event.shiftKey &&
-      !event.repeat
-    ) {
+    if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.repeat) {
       const method = resolvePaymentMethodShortcut(event.key, methods)
       if (method) {
         event.preventDefault()
@@ -1682,10 +1676,7 @@ function PaymentMethodPickerDialog({
         </div>
         <p className="payment-method-picker-hint" id="payment-method-keyboard-hint">
           Use ← and → to choose a method; ↑ and ↓ move between controls. Press Enter to continue, or{' '}
-          {methods
-            .map((type) => `${shortcutByMethod[type]} for ${tenderLabel(type)}`)
-            .join(', ')}
-          .
+          {methods.map((type) => `${shortcutByMethod[type]} for ${tenderLabel(type)}`).join(', ')}.
         </p>
       </div>
       <div className="dialog-actions checkout-dialog-actions">
