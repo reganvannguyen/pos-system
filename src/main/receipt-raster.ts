@@ -6,7 +6,7 @@ export function monochromeReceiptBitmap(bitmap: Buffer): Buffer {
     const alpha = bitmap[offset + 3] / 255
     const brightness =
       ((bitmap[offset] + bitmap[offset + 1] + bitmap[offset + 2]) / 3) * alpha + 255 * (1 - alpha)
-    const value = brightness < 180 ? 0 : 255
+    const value = brightness < 150 ? 0 : 255
     result[offset] = value
     result[offset + 1] = value
     result[offset + 2] = value
@@ -24,11 +24,25 @@ export function receiptRasterStrips(bitmap: Buffer, width: number, height: numbe
   return strips
 }
 
+export function addVerticalPadding(
+  bitmap: Buffer,
+  width: number,
+  height: number,
+  topRows: number,
+  bottomRows: number
+): { bitmap: Buffer; height: number } {
+  const newHeight = height + topRows + bottomRows
+  const rowBytes = width * 4
+  const result = Buffer.alloc(newHeight * rowBytes, 255)
+  bitmap.copy(result, topRows * rowBytes)
+  return { bitmap: result, height: newHeight }
+}
+
 export function renderRasterPrintHtml(imageUrls: string[]): string {
   return `<!doctype html><html><head><meta charset="utf-8"><style>
     * { box-sizing: border-box; }
     body { margin: 0; padding: 0; }
-    img { display: block; width: 48mm; max-width: 100%; height: auto; margin: 0 auto;
+    img { display: block; width: 48mm; max-width: 100%; height: auto; margin: 0;
       break-inside: avoid; page-break-inside: avoid; }
   </style></head><body>${imageUrls.map((url) => `<img src="${url}" alt="">`).join('')}</body></html>`
 }

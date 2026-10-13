@@ -198,12 +198,20 @@ export function renderReceiptPreviewHtml(business: ReceiptBusinessDetails): stri
   )
 }
 
+export function renderCalibrationRulerSvg(): string {
+  return `<div class="calibration" style="display: flex; justify-content: space-between; font-size: 10px; font-weight: 700; border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 2px 0; margin: 4px 0;">
+    <span>LEFT |</span>
+    <span>• CENTERED •</span>
+    <span>| RIGHT</span>
+  </div>`
+}
+
 export function renderReceiptTestHtml(business: ReceiptBusinessDetails): string {
   return renderReceiptPreviewHtml(business)
     .replace('SAMPLE PREVIEW', 'TEST RECEIPT - NOT A SALE')
     .replace(
       '<div class="invoice-meta">',
-      '<div class="calibration"><span>LEFT |</span><span>| RIGHT</span></div><div class="invoice-meta">'
+      `${renderCalibrationRulerSvg()}<div class="invoice-meta">`
     )
     .replace('</footer>', '<p>Amount check: $1,234.56</p></footer>')
 }
