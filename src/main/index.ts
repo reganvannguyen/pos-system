@@ -161,6 +161,9 @@ function registerReceiptHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.settingsSaveReceipt, (_event, settings: unknown) =>
     toReceiptResult(() => requireReceiptService().saveSettings(settings))
   )
+  ipcMain.handle(IPC_CHANNELS.receiptsPrintTest, () =>
+    toReceiptResult(() => requireReceiptService().printTest())
+  )
   ipcMain.handle(IPC_CHANNELS.receiptsPrint, (_event, saleId: unknown) =>
     toReceiptResult(() => requireReceiptService().print(saleId))
   )

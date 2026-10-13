@@ -42,11 +42,12 @@ export function renderReceiptHtml(
   const isReturn = sale.transactionType === 'return'
   const items = sale.items
     .map(
-      (item) => `<tr>
-        <td class="description">${escapeHtml(item.description)}<small>SKU ${escapeHtml(item.sku)}</small></td>
+      (item) => `<tr class="description-row">
+        <td class="description" colspan="3">${escapeHtml(item.description)}<small>SKU ${escapeHtml(item.sku)}</small></td>
+      </tr><tr class="amount-row">
         <td class="quantity">${item.quantity}</td>
-        <td class="price">${formatMoney(item.unitPriceCents)}</td>
-        <td class="line-total">${formatMoney(item.lineTotalCents)}</td>
+        <td class="price">${formatItemMoney(item.unitPriceCents)}</td>
+        <td class="line-total">${formatItemMoney(item.lineTotalCents)}</td>
       </tr>`
     )
     .join('')
@@ -79,25 +80,30 @@ export function renderReceiptHtml(
   <style>
     @page { margin: 0; }
     * { box-sizing: border-box; }
-    body { width: 100%; max-width: 58mm; margin: 0 auto; padding: 4mm; color: #000; font: 600 11px/1.35 Consolas, "Courier New", monospace; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body { width: 100%; max-width: 48mm; margin: 0 auto; padding: 5mm 1mm 4mm; color: #000; font: 600 11px/1.35 Consolas, "Courier New", monospace; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     header { text-align: center; margin-bottom: 9px; }
-    h1 { margin: 0 0 4px; font-size: 17px; overflow-wrap: anywhere; }
+    h1 { margin: 0 0 4px; font: 700 15px/1.3 Arial, sans-serif; overflow-wrap: anywhere; }
     p { margin: 2px 0; overflow-wrap: anywhere; }
     .muted { color: #000; }
     .separator { border-top: 1px dashed #000; margin: 7px 0; }
     .invoice-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
     .invoice-meta p:first-child { grid-column: 1 / -1; font-weight: 700; }
+    .invoice-number { display: inline-block; white-space: nowrap; }
     table { width: 100%; border-collapse: collapse; table-layout: fixed; }
     th { padding: 4px 0; border-top: 1px dashed #000; border-bottom: 1px dashed #000; text-align: left; font-size: 9px; }
     td { padding: 5px 0; vertical-align: top; overflow-wrap: anywhere; }
-    th:nth-child(1), td:nth-child(1) { width: 30%; }
-    th:nth-child(2), td:nth-child(2) { width: 8%; text-align: center; }
-    th:nth-child(3), td:nth-child(3) { width: 31%; text-align: right; }
-    th:nth-child(4), td:nth-child(4) { width: 31%; text-align: right; }
+    th:nth-child(1), td:nth-child(1) { width: 14%; text-align: center; }
+    th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { width: 43%; text-align: right; padding-left: 4px; }
+    .description-row td { width: auto; text-align: left; padding: 5px 0 1px; }
+    .amount-row td { padding-top: 1px; }
     .description small { display: block; color: #000; font-size: 9px; }
     .price, .line-total { font-size: 10px; white-space: nowrap; }
     .totals { margin-top: 7px; padding-top: 6px; border-top: 1px dashed #333; }
-    .totals div { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+    .totals div { display: flex; justify-content: space-between; gap: 4px; padding: 2px 0; }
+    .totals span:first-child { min-width: 0; overflow-wrap: anywhere; }
+    .totals span:last-child { flex-shrink: 0; white-space: nowrap; }
+    .totals .payment-method span:last-child { flex-shrink: 1; min-width: 0; white-space: normal; text-align: right; overflow-wrap: anywhere; }
+    .calibration { display: flex; justify-content: space-between; border: 1px solid #000; margin: 4px 0; font-size: 9px; }
     .total { margin-top: 4px; padding-top: 5px !important; border-top: 1px solid #111; font-weight: 700; }
     .payment-details { margin-top: 7px; }
     .customer-details { margin: 5px 0 9px; padding: 6px 0; border-top: 1px dashed #000; border-bottom: 1px dashed #000; }
@@ -116,7 +122,7 @@ export function renderReceiptHtml(
     <div class="separator"></div>
     ${isPreview ? '<p class="preview-note">SAMPLE PREVIEW</p>' : ''}
     <div class="invoice-meta">
-      <p>${isReturn ? 'RETURN NO.' : 'INVOICE NO.'} ${escapeHtml(sale.transactionNumber)}</p>
+      <p>${isReturn ? 'RETURN NO.' : 'INVOICE NO.'} <span class="invoice-number">${escapeHtml(sale.transactionNumber)}</span></p>
       <p>DATE: ${dateTime.date}</p>
       <p>TIME: ${dateTime.time}</p>
     </div>
@@ -134,7 +140,7 @@ export function renderReceiptHtml(
       : ''
   }
   <table aria-label="${isReturn ? 'Returned' : 'Purchased'} items">
-    <thead><tr><th>Description</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
+    <thead><tr><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
     <tbody>${items}</tbody>
   </table>
   <section class="totals" aria-label="${isReturn ? 'Return' : 'Invoice'} totals">
@@ -145,7 +151,7 @@ export function renderReceiptHtml(
     <div class="payment-details"><span>${isReturn ? 'Amount refunded' : sale.charge ? 'Paid now' : 'Amount tendered'}</span><span>${tendered}</span></div>
     ${isReturn ? '' : `<div><span>Change due</span><span>${formatMoney(change)}</span></div>`}
     ${sale.charge ? `<div><span>Amount charged</span><span>${formatMoney(sale.charge.amountCents)}</span></div><div class="total"><span>Balance due</span><span>${formatMoney(sale.charge.balanceCents)}</span></div>` : ''}
-    <div><span>${isReturn ? 'Refund method' : 'Payment type'}</span><span>${escapeHtml(chargePaymentTypes || 'No payment required')}</span></div>
+    <div class="payment-method"><span>${isReturn ? 'Refund method' : 'Payment type'}</span><span>${escapeHtml(chargePaymentTypes || 'No payment required')}</span></div>
   </section>
   <footer>
     ${business.businessGstNumber ? `<p>GST/HST #${escapeHtml(business.businessGstNumber)}</p>` : ''}
@@ -192,6 +198,16 @@ export function renderReceiptPreviewHtml(business: ReceiptBusinessDetails): stri
   )
 }
 
+export function renderReceiptTestHtml(business: ReceiptBusinessDetails): string {
+  return renderReceiptPreviewHtml(business)
+    .replace('SAMPLE PREVIEW', 'TEST RECEIPT - NOT A SALE')
+    .replace(
+      '<div class="invoice-meta">',
+      '<div class="calibration"><span>LEFT |</span><span>| RIGHT</span></div><div class="invoice-meta">'
+    )
+    .replace('</footer>', '<p>Amount check: $1,234.56</p></footer>')
+}
+
 export function formatReceiptDateTime(value: string): { date: string; time: string } {
   return { date: formatLocalDate(value), time: formatLocalTime(value) }
 }
@@ -222,6 +238,12 @@ function formatLocalTime(value: string): string {
 function parseUtcTimestamp(value: string): Date | null {
   const date = new Date(`${value.replace(' ', 'T')}Z`)
   return Number.isNaN(date.getTime()) ? null : date
+}
+
+function formatItemMoney(cents: number): string {
+  const amount = formatMoney(cents)
+  const fontSize = Math.min(10, 110 / amount.length)
+  return `<span style="font-size: ${fontSize}px">${amount}</span>`
 }
 
 function formatMoney(cents: number): string {

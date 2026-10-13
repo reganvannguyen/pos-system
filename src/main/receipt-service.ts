@@ -6,6 +6,7 @@ import type {
   ReceiptPdfResult,
   ReceiptBusinessDetails,
   ReceiptPrintResult,
+  ReceiptTestPrintResult,
   ReceiptResult,
   ReceiptSettings,
   ReceiptTextDraftResult
@@ -16,6 +17,7 @@ import type { SaleDetailRecord } from './database/repositories/sales'
 import type { SettingsRecord } from './database/types'
 import {
   formatReceiptDateTime,
+  renderReceiptTestHtml,
   renderReceiptHtml as renderReceiptTemplate,
   type ReceiptTemplateSale
 } from '../shared/receipt-html'
@@ -88,6 +90,28 @@ export function createReceiptService({
 
       const saved = settings.saveReceipt(parsed.printerName)
       return { printerName: saved.printer_name }
+    },
+
+    async printTest(): Promise<ReceiptTestPrintResult> {
+      const currentSettings = settings.get()
+      const printerName = currentSettings.printer_name
+      if (!printerName) {
+        throw new ReceiptServiceError(
+          'printer-not-selected',
+          'Choose and save a receipt printer in Settings before printing.'
+        )
+      }
+      await ensurePrinterAvailable(printerName)
+      try {
+        await printHtml(renderReceiptTestHtml(toReceiptBusiness(currentSettings)), printerName)
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'The printer rejected the job.'
+        throw new ReceiptServiceError(
+          'print-failed',
+          `Test receipt could not be sent to the printer. ${reason}`
+        )
+      }
+      return { sentToPrinter: true }
     },
 
     async print(saleIdValue: unknown): Promise<ReceiptPrintResult> {

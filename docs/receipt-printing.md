@@ -50,7 +50,22 @@ open the draft, show the message with a Copy action. The POS does not send or tr
 
 ## 4. PDF and Printer Layout
 
-Use the escaped 58 mm thermal layout for printer and PDF output. The PDF uses a content-driven
+Keep the driver configured for 58 mm paper. The shared template uses a centered 48 mm
+printable area, 1 mm horizontal padding, and 5 mm of top space. Product descriptions occupy
+their own rows so prices and amounts have enough room. Preview and PDF use this layout.
+
+Printer output is captured in Electron after fonts load, at 203 dpi, normalized to 384 pixels
+wide, and converted to opaque black-and-white pixels. Consecutive image strips of at most
+64 pixels high prevent one oversized receipt image from being clipped at a driver page
+boundary. Printing uses the selected printer's default paper size, its printable-area margins,
+and 100% scale. The driver receives images rather than font commands.
+
+Settings provides **Print test receipt** using the saved printer and saved store details.
+It includes left/right alignment marks, a complete sample invoice number, and a representative
+large amount. It is marked TEST RECEIPT - NOT A SALE and creates no transaction.
+Physical acceptance on the POS-5890K requires the heading, both edge marks, last invoice digit,
+rightmost amounts, and final footer to print intact.
+ The PDF uses a content-driven
 height. Historical reprints use the latest saved store details together with the original sale's
 item, tax, and tender snapshots. No receipt reason, customer contact data, or live product data is
 added to the PDF.

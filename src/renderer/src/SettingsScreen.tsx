@@ -49,6 +49,7 @@ function SettingsScreen(): React.JSX.Element {
   const [printerLoading, setPrinterLoading] = useState(false)
   const [receiptLoaded, setReceiptLoaded] = useState(false)
   const [receiptSaving, setReceiptSaving] = useState(false)
+  const [testPrinting, setTestPrinting] = useState(false)
   const [receiptError, setReceiptError] = useState('')
   const [receiptNotice, setReceiptNotice] = useState('')
 
@@ -205,6 +206,24 @@ function SettingsScreen(): React.JSX.Element {
     setBusinessFieldErrors((current) => ({ ...current, [field]: undefined }))
     setBusinessError('')
     setBusinessNotice('')
+  }
+
+  async function printTestReceipt(): Promise<void> {
+    setTestPrinting(true)
+    setReceiptError('')
+    setReceiptNotice('')
+    try {
+      const result = await window.pos.receipts.printTest()
+      if (!result.ok) setReceiptError(result.error.message)
+      else
+        setReceiptNotice(
+          'Test receipt sent to the saved printer. Check both edges, the store name, and the full invoice number.'
+        )
+    } catch {
+      setReceiptError('Test receipt could not be printed. Try again.')
+    } finally {
+      setTestPrinting(false)
+    }
   }
 
   async function saveReceiptSettings(): Promise<void> {
@@ -560,7 +579,7 @@ function SettingsScreen(): React.JSX.Element {
             <h2 id="receipt-settings-title">Receipt printer</h2>
             <p className="settings-copy">
               Choose the printer used when staff select Print after checkout. The driver controls
-              paper size; use a 58 mm receipt setting for this register.
+              paper size; use 58 mm paper. Receipts fit its 48 mm printable area.
             </p>
           </div>
           <button
@@ -601,7 +620,7 @@ function SettingsScreen(): React.JSX.Element {
               <select
                 id="receipt-printer"
                 value={printerName ?? ''}
-                disabled={receiptSaving || printerLoading}
+                disabled={receiptSaving || printerLoading || testPrinting}
                 onChange={(event) => setPrinterName(event.target.value || null)}
               >
                 <option value="">No printer selected</option>
@@ -627,6 +646,9 @@ function SettingsScreen(): React.JSX.Element {
               )}
             </label>
 
+            <p className="settings-help">
+              Test printing uses saved printer and store details. Save changes first.
+            </p>
             {receiptError && (
               <p className="product-banner-error" role="alert">
                 {receiptError}
@@ -641,9 +663,17 @@ function SettingsScreen(): React.JSX.Element {
               <button
                 className="primary-button"
                 type="submit"
-                disabled={receiptSaving || printerLoading}
+                disabled={receiptSaving || printerLoading || testPrinting}
               >
                 {receiptSaving ? 'Saving…' : 'Save receipt settings'}
+              </button>
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={testPrinting || receiptSaving || printerLoading}
+                onClick={() => void printTestReceipt()}
+              >
+                {testPrinting ? 'Printing…' : 'Print test receipt'}
               </button>
             </div>
           </form>

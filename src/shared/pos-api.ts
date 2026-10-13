@@ -25,6 +25,7 @@ export const IPC_CHANNELS = {
   settingsGetTaxes: 'settings:get-taxes',
   settingsSaveTaxes: 'settings:save-taxes',
   receiptsPrint: 'receipts:print',
+  receiptsPrintTest: 'receipts:print-test',
   receiptsEmailDraft: 'receipts:email-draft',
   receiptsTextDraft: 'receipts:text-draft',
   receiptsOpenPdf: 'receipts:open-pdf'
@@ -371,6 +372,10 @@ export interface TaxSettingsApiError {
 
 export type TaxSettingsResult<T> = { ok: true; data: T } | { ok: false; error: TaxSettingsApiError }
 
+export interface ReceiptTestPrintResult {
+  sentToPrinter: true
+}
+
 export interface ReceiptPrintResult {
   saleId: number
   sentToPrinter: true
@@ -452,6 +457,7 @@ export interface PosApi {
     saveTaxes(settings: TaxSettingsInput): Promise<TaxSettingsResult<TaxRate[]>>
   }
   receipts: {
+    printTest(): Promise<ReceiptResult<ReceiptTestPrintResult>>
     print(saleId: number): Promise<ReceiptResult<ReceiptPrintResult>>
     emailDraft(saleId: number, recipient: string): Promise<ReceiptResult<ReceiptEmailDraftResult>>
     textDraft(saleId: number, recipient: string): Promise<ReceiptResult<ReceiptTextDraftResult>>

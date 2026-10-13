@@ -14,6 +14,11 @@ import {
   toReceiptResult
 } from '../src/main/receipt-service'
 import { renderReceiptHtml, renderReceiptPreviewHtml } from '../src/shared/receipt-html'
+import {
+  monochromeReceiptBitmap,
+  receiptRasterStrips,
+  renderRasterPrintHtml
+} from '../src/main/receipt-raster'
 import { createSalesService } from '../src/main/sales-service'
 
 const schema =
@@ -184,20 +189,20 @@ test('live receipt preview renders draft details in the shared 58 mm invoice tem
   })
   assert.match(
     html,
-    /body \{ width: 100%; max-width: 58mm; margin: 0 auto; padding: 4mm; color: #000;/
+    /body \{ width: 100%; max-width: 48mm; margin: 0 auto; padding: 5mm 1mm 4mm; color: #000;/
   )
   assert.match(html, /font: 600 11px\/1\.35 Consolas/)
   assert.match(html, /text-align: center; margin-bottom: 9px/)
   assert.match(html, /td \{ padding: 5px 0;/)
-  assert.match(html, /width: 31%; text-align: right/)
-  assert.match(html, /width: 58mm/)
+  assert.match(html, /width: 43%; text-align: right/)
+  assert.match(html, /width: 48mm/)
   assert.match(html, /Rainbow &amp; Co/)
   assert.match(html, /496 Stetson Street/)
   assert.match(html, /Kelowna, BC V1X 8A5/)
-  assert.match(html, /INVOICE NO\. 20251008-0001/)
+  assert.match(html, /INVOICE NO\. <span class="invoice-number">20251008-0001<\/span>/)
   assert.match(html, /DATE: \d{2}\/\d{2}\/\d{2}/)
   assert.match(html, /TIME: \d{1,2}:\d{2} (AM|PM)/)
-  assert.match(html, /Description<\/th><th>Qty<\/th><th>Price<\/th><th>Total<\/th>/)
+  assert.match(html, /Qty<\/th><th>Price<\/th><th>Total<\/th>/)
   assert.match(html, /GST \(5\.00%\)/)
   assert.match(html, /PST \(7\.00%\)/)
   assert.match(html, /Amount tendered/)
@@ -343,7 +348,10 @@ test('escapes receipt content and uses saved sale snapshots', async () => {
     assert.match(html, /\$2\.75/)
     assert.match(html, /\$5\.50/)
     assert.match(html, /Amount tendered/)
-    assert.match(html, new RegExp(`INVOICE NO\\. ${checkout.sale.transactionNumber}`))
+    assert.match(
+      html,
+      new RegExp(`INVOICE NO\\. <span class="invoice-number">${checkout.sale.transactionNumber}`)
+    )
     assert.match(html, /DATE: \d{2}\/\d{2}\/\d{2}/)
     assert.match(html, /TIME: \d{1,2}:\d{2} (AM|PM)/)
     assert.doesNotMatch(html, /Changed after checkout/)
@@ -396,7 +404,10 @@ test('return receipts use negative amounts, Return #, refund labels, and omit th
 
     await receipt.print(returned.return.id)
     const html = printJobs[0]!
-    assert.match(html, new RegExp(`RETURN NO\\. ${returned.return.transactionNumber}`))
+    assert.match(
+      html,
+      new RegExp(`RETURN NO\\. <span class="invoice-number">${returned.return.transactionNumber}`)
+    )
     assert.match(html, /-\$7\.00/)
     assert.match(html, /Amount refunded/)
     assert.match(html, /Refund method/)
@@ -600,5 +611,53 @@ test('rejects invalid email recipients without opening external apps', async () 
       'invalid-input'
     )
     assert.equal(externalUrls.length, 0)
+  })
+})
+
+test('raster conversion is opaque black-and-white and keeps every pixel in order across strips', () => {
+  const width = 384
+  const height = 139
+  const source = Buffer.alloc(width * height * 4)
+  for (let offset = 0; offset < source.length; offset += 4) {
+    source[offset] = source[offset + 1] = source[offset + 2] = (offset / 4) % 256
+    source[offset + 3] = 255
+  }
+  const mono = monochromeReceiptBitmap(source)
+  assert.deepEqual([...mono.subarray(0, 4)], [0, 0, 0, 255])
+  assert.deepEqual([...mono.subarray(180 * 4, 181 * 4)], [255, 255, 255, 255])
+  assert.deepEqual([...monochromeReceiptBitmap(Buffer.from([0, 0, 0, 0]))], [255, 255, 255, 255])
+  for (let offset = 0; offset < mono.length; offset += 4) {
+    assert.ok(mono[offset] === 0 || mono[offset] === 255)
+    assert.equal(mono[offset], mono[offset + 1])
+    assert.equal(mono[offset], mono[offset + 2])
+    assert.equal(mono[offset + 3], 255)
+  }
+  const strips = receiptRasterStrips(mono, width, height)
+  assert.deepEqual(
+    strips.map((strip) => strip.length / (width * 4)),
+    [64, 64, 11]
+  )
+  assert.deepEqual(Buffer.concat(strips), mono)
+  const html = renderRasterPrintHtml(['data:image/png;base64,first', 'data:image/png;base64,last'])
+  assert.ok(html.indexOf('base64,first') < html.indexOf('base64,last'))
+  assert.match(html, /width: 48mm; max-width: 100%/)
+})
+
+test('test printing uses saved details and creates no transaction', async () => {
+  await withReceiptService(async ({ database, settings, receipt, printJobs, setPrinters }) => {
+    assertReceiptError(await toReceiptResult(() => receipt.printTest()), 'printer-not-selected')
+    await receipt.saveSettings({ printerName: 'Receipt_Printer' })
+    database.prepare('UPDATE settings SET business_name = ?').run('Saved & Store')
+    const before = database.prepare('SELECT count(*) AS count FROM sales').get()
+    assert.deepEqual(await receipt.printTest(), { sentToPrinter: true })
+    assert.equal(settings.get().printer_name, 'Receipt_Printer')
+    assert.match(printJobs[0], /Saved &amp; Store/)
+    assert.match(printJobs[0], /TEST RECEIPT - NOT A SALE/)
+    assert.match(printJobs[0], /LEFT \|/)
+    assert.match(printJobs[0], /\| RIGHT/)
+    assert.match(printJobs[0], /Amount check: \$1,234\.56/)
+    assert.deepEqual(database.prepare('SELECT count(*) AS count FROM sales').get(), before)
+    setPrinters([])
+    assertReceiptError(await toReceiptResult(() => receipt.printTest()), 'printer-unavailable')
   })
 })

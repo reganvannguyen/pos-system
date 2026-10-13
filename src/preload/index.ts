@@ -40,6 +40,7 @@ const posApi: PosApi = {
     saveTaxes: (settings) => ipcRenderer.invoke(IPC_CHANNELS.settingsSaveTaxes, settings)
   },
   receipts: {
+    printTest: () => ipcRenderer.invoke(IPC_CHANNELS.receiptsPrintTest),
     print: (saleId) => ipcRenderer.invoke(IPC_CHANNELS.receiptsPrint, saleId),
     emailDraft: (saleId, recipient) =>
       ipcRenderer.invoke(IPC_CHANNELS.receiptsEmailDraft, saleId, recipient),

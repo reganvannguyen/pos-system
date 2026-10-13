@@ -18,7 +18,7 @@ export async function createReceiptPdf(html: string, saleId: number): Promise<st
   try {
     await pdfWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
     const contentHeight = (await pdfWindow.webContents.executeJavaScript(
-      'document.body.scrollHeight'
+      'document.fonts.ready.then(() => document.body.scrollHeight)'
     )) as number
     const pdf = await pdfWindow.webContents.printToPDF({
       pageSize: { width: 58 / 25.4, height: Math.max(1.5, (contentHeight + 8) / 96) },
