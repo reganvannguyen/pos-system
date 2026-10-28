@@ -1,7 +1,6 @@
 import type {
   CheckoutItem,
   CheckoutQuote,
-  ChargeCustomer,
   ChargePayment,
   ChargePaymentTenderType,
   DailyProductSummary,
@@ -86,12 +85,22 @@ export function createSalesService(repository: SalesRepository) {
       if (!isRecord(value)) {
         throw new SalesServiceError('invalid-input', 'Enter a valid sale and payment entries.')
       }
+      const customerId = parseOptionalCustomerId(value.customerId)
+      const chargeRemainingBalance = parseOptionalBoolean(
+        value.chargeRemainingBalance,
+        'Charge the remaining balance'
+      )
+      if (chargeRemainingBalance && customerId === undefined) {
+        throw new SalesServiceError(
+          'invalid-input',
+          'Select a customer before charging the remaining balance.'
+        )
+      }
       const sale = repository.completeCheckout({
         items: parseItems(value.items),
         tenders: parseTenders(value.tenders),
-        ...(value.chargeCustomer !== undefined && {
-          chargeCustomer: parseChargeCustomer(value.chargeCustomer)
-        })
+        ...(customerId !== undefined && { customerId }),
+        ...(chargeRemainingBalance && { chargeRemainingBalance })
       })
       return { sale: toSaleDetail(sale) }
     },
@@ -133,7 +142,8 @@ export function createSalesService(repository: SalesRepository) {
       const returned = repository.completeReturn({
         items: parsed.items,
         reason: parsed.reason,
-        tenders: parsed.tenders
+        tenders: parsed.tenders,
+        ...(parsed.customerId !== undefined && { customerId: parsed.customerId })
       })
       return { return: toSaleDetail(returned) }
     },
@@ -530,7 +540,12 @@ function parseItems(value: unknown): CheckoutItem[] {
 function parseReturnRequest(
   value: unknown,
   includeTenders: boolean
-): { items: ReturnItemInput[]; reason: string; tenders: TenderInput[] } {
+): {
+  items: ReturnItemInput[]
+  reason: string
+  tenders: TenderInput[]
+  customerId?: number
+} {
   if (!isRecord(value)) {
     throw new SalesServiceError('invalid-input', 'Enter the return details.')
   }
@@ -564,10 +579,12 @@ function parseReturnRequest(
     seenProductIds.add(productId)
     return { productId, quantity, restock: item.restock }
   })
+  const customerId = parseOptionalCustomerId(value.customerId)
   return {
     items,
     reason: value.reason.trim(),
-    tenders: includeTenders ? parseTenders(value.tenders, true) : []
+    tenders: includeTenders ? parseTenders(value.tenders, true) : [],
+    ...(customerId !== undefined && { customerId })
   }
 }
 
@@ -625,45 +642,20 @@ function parseTenders(value: unknown, isReturn = false): TenderInput[] {
   })
 }
 
-function parseChargeCustomer(value: unknown): ChargeCustomer {
-  if (!isRecord(value)) {
-    throw new SalesServiceError('invalid-input', 'Enter customer details for this charge.')
+function parseOptionalCustomerId(value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new SalesServiceError('invalid-input', 'Choose a valid customer.')
   }
-  const name = parseContactField(value.name, 'Customer name', 200, true)
-  const companyName = parseContactField(value.companyName, 'Company name', 200)
-  const address = parseContactField(value.address, 'Address', 500)
-  const phoneNumber = parseContactField(value.phoneNumber, 'Phone number', 50)
-  const email = parseContactField(value.email, 'Email', 254)
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw new SalesServiceError('invalid-input', 'Enter a valid customer email address.')
-  }
-  return { name, companyName, address, phoneNumber, email }
+  return value
 }
 
-function parseContactField(
-  value: unknown,
-  label: string,
-  maxLength: number,
-  required = false
-): string {
-  if (value === undefined || value === null) {
-    if (!required) return ''
-    throw new SalesServiceError('invalid-input', `Enter a ${label.toLowerCase()}.`)
+function parseOptionalBoolean(value: unknown, label: string): boolean {
+  if (value === undefined) return false
+  if (typeof value !== 'boolean') {
+    throw new SalesServiceError('invalid-input', `${label} must be true or false.`)
   }
-  if (typeof value !== 'string') {
-    throw new SalesServiceError('invalid-input', `Enter a valid ${label.toLowerCase()}.`)
-  }
-  const trimmed = value.trim()
-  if (required && !trimmed) {
-    throw new SalesServiceError('invalid-input', `Enter a ${label.toLowerCase()}.`)
-  }
-  if (trimmed.length > maxLength) {
-    throw new SalesServiceError(
-      'invalid-input',
-      `${label} must be ${maxLength} characters or fewer.`
-    )
-  }
-  return trimmed
+  return value
 }
 
 function parseId(value: unknown): number {
@@ -774,7 +766,18 @@ function toSaleSummary(value: SaleSummaryRecord): SaleSummary {
       changeCents: payment.change_cents
     })),
     createdAt: value.created_at,
-    itemCount: value.item_count
+    itemCount: value.item_count,
+    customer:
+      value.customer_id === null
+        ? null
+        : {
+            id: value.customer_id,
+            name:
+              [value.customer_first_name, value.customer_last_name].filter(Boolean).join(' ') ||
+              value.customer_company_name ||
+              '',
+            companyName: value.customer_company_name ?? ''
+          }
   }
 }
 

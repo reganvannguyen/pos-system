@@ -5,6 +5,11 @@ const posApi: PosApi = {
   app: {
     getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.appGetVersion)
   },
+  customers: {
+    list: (query) => ipcRenderer.invoke(IPC_CHANNELS.customersList, query),
+    create: (input) => ipcRenderer.invoke(IPC_CHANNELS.customersCreate, input),
+    update: (id, input) => ipcRenderer.invoke(IPC_CHANNELS.customersUpdate, id, input)
+  },
   products: {
     list: (options) => ipcRenderer.invoke(IPC_CHANNELS.productsList, options),
     getBySku: (sku) => ipcRenderer.invoke(IPC_CHANNELS.productsGetBySku, sku),

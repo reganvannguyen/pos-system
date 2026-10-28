@@ -6,6 +6,7 @@ import { openDatabase } from './database/connection'
 import { createRepositories } from './database/repositories'
 import type { PosDatabase } from './database/types'
 import { createProductService, toProductResult } from './product-service'
+import { createCustomerService, toCustomerResult } from './customer-service'
 import {
   createBusinessSettingsService,
   toBusinessSettingsResult
@@ -22,6 +23,7 @@ import { createSalesService, toSalesResult, toSalesResultAsync } from './sales-s
 let database: PosDatabase | undefined
 let repositories: ReturnType<typeof createRepositories> | undefined
 let productService: ReturnType<typeof createProductService> | undefined
+let customerService: ReturnType<typeof createCustomerService> | undefined
 let businessSettingsService: ReturnType<typeof createBusinessSettingsService> | undefined
 let taxSettingsService: ReturnType<typeof createTaxSettingsService> | undefined
 let salesService: ReturnType<typeof createSalesService> | undefined
@@ -75,6 +77,18 @@ function registerProductHandlers(): void {
   )
   ipcMain.handle(IPC_CHANNELS.productsSetActive, (_event, id: unknown, isActive: unknown) =>
     toProductResult(() => requireProductService().setActive(id, isActive))
+  )
+}
+
+function registerCustomerHandlers(): void {
+  ipcMain.handle(IPC_CHANNELS.customersList, (_event, query: unknown) =>
+    toCustomerResult(() => requireCustomerService().list(query))
+  )
+  ipcMain.handle(IPC_CHANNELS.customersCreate, (_event, input: unknown) =>
+    toCustomerResult(() => requireCustomerService().create(input))
+  )
+  ipcMain.handle(IPC_CHANNELS.customersUpdate, (_event, id: unknown, input: unknown) =>
+    toCustomerResult(() => requireCustomerService().update(id, input))
   )
 }
 
@@ -198,6 +212,11 @@ function requireProductService(): NonNullable<typeof productService> {
   return productService
 }
 
+function requireCustomerService(): NonNullable<typeof customerService> {
+  if (!customerService) throw new Error('The customer service is not ready.')
+  return customerService
+}
+
 function requireSalesService(): NonNullable<typeof salesService> {
   if (!salesService) throw new Error('The sales service is not ready.')
   return salesService
@@ -228,6 +247,7 @@ app.whenReady().then(() => {
     database = openDatabase(join(app.getPath('userData'), 'pos-system.sqlite'))
     repositories = createRepositories(database)
     repositories.settings.get()
+    customerService = createCustomerService(repositories.customers)
     productService = createProductService(repositories.products)
     businessSettingsService = createBusinessSettingsService(repositories.settings)
     taxSettingsService = createTaxSettingsService(repositories.taxes)
@@ -252,6 +272,7 @@ app.whenReady().then(() => {
   } catch (error) {
     repositories = undefined
     productService = undefined
+    customerService = undefined
     businessSettingsService = undefined
     taxSettingsService = undefined
     salesService = undefined
@@ -267,6 +288,7 @@ app.whenReady().then(() => {
   app.setAppUserModelId('com.regannguyen.possystem')
 
   ipcMain.handle(IPC_CHANNELS.appGetVersion, () => app.getVersion())
+  registerCustomerHandlers()
   registerProductHandlers()
   registerBusinessSettingsHandlers()
   registerSalesHandlers()

@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import PosScreen from './PosScreen'
 import ProductsScreen from './ProductsScreen'
+import CustomersScreen from './CustomersScreen'
 import SalesScreen from './SalesScreen'
 import SettingsScreen from './SettingsScreen'
+import type { Customer } from '../../shared/pos-api'
 import type { CartLine } from './cart'
 import type { CheckoutSession } from './checkout'
 
-const adminViews = ['Products', 'Sales', 'Settings'] as const
+const adminViews = ['Products', 'Customers', 'Sales', 'Settings'] as const
 type View = 'POS' | (typeof adminViews)[number]
 
 function App(): React.JSX.Element {
@@ -14,6 +16,7 @@ function App(): React.JSX.Element {
   const [moreOpen, setMoreOpen] = useState(false)
   const [version, setVersion] = useState('Loading…')
   const [cart, setCart] = useState<CartLine[]>([])
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
   const [checkoutSession, setCheckoutSession] = useState<CheckoutSession | null>(null)
   const [registerMode, setRegisterMode] = useState<'sale' | 'return'>('sale')
   const [returnReason, setReturnReason] = useState('')
@@ -122,10 +125,18 @@ function App(): React.JSX.Element {
             setMode={setRegisterMode}
             returnReason={returnReason}
             setReturnReason={setReturnReason}
+            selectedCustomer={selectedCustomer}
+            setSelectedCustomer={setSelectedCustomer}
             onNavigateToProducts={() => navigateTo('Products')}
           />
         ) : activeView === 'Products' ? (
           <ProductsScreen />
+        ) : activeView === 'Customers' ? (
+          <CustomersScreen
+            onCustomerChanged={(customer) => {
+              setSelectedCustomer((current) => (current?.id === customer.id ? customer : current))
+            }}
+          />
         ) : activeView === 'Sales' ? (
           <SalesScreen />
         ) : (

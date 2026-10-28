@@ -13,8 +13,22 @@ export interface ProductRecord {
   updated_at: string
 }
 
+export interface CustomerRecord {
+  id: number
+  first_name: string
+  last_name: string
+  company_name: string
+  address: string
+  phone_number: string
+  email: string
+  image_data_url: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface SaleRecord {
   id: number
+  customer_id: number | null
   subtotal_cents: number
   tax_cents: number
   total_cents: number

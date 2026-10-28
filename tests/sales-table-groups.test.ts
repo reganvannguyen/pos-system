@@ -17,7 +17,8 @@ function sale(id: number, createdAt: string): SaleSummary {
     chargeBalanceCents: null,
     payments: [],
     createdAt,
-    itemCount: 1
+    itemCount: 1,
+    customer: null
   }
 }
 

@@ -2,6 +2,7 @@ export type RegisterShortcutAction =
   | 'focus-sku'
   | 'toggle-mode'
   | 'navigate-products'
+  | 'open-customer-picker'
   | 'clear-cart'
   | 'select-line-for-removal'
   | 'select-line-for-price'
@@ -18,6 +19,7 @@ export interface RegisterShortcutContext {
   dialogOpen: boolean
   skuEnabled: boolean
   productsEnabled: boolean
+  customerPickerEnabled?: boolean
   clearEnabled: boolean
   lineSelectionEnabled: boolean
   priceEditEnabled: boolean
@@ -47,6 +49,7 @@ export function resolveRegisterShortcut(
 
   if (context.key === 'F2') return context.skuEnabled ? 'focus-sku' : null
   if (context.key === 'F3') return context.productsEnabled ? 'navigate-products' : null
+  if (context.key === 'F8') return context.customerPickerEnabled ? 'open-customer-picker' : null
   if (context.key === 'F4') return context.clearEnabled ? 'clear-cart' : null
   if (context.key === 'F5') return context.lineSelectionEnabled ? 'select-line-for-removal' : null
   if (context.key === 'F6') return context.priceEditEnabled ? 'select-line-for-price' : null
@@ -143,25 +146,65 @@ export function nextDirectionalFocusIndex(
   const currentY = current.top + current.height / 2
   const horizontal = key === 'ArrowLeft' || key === 'ArrowRight'
   const forward = key === 'ArrowRight' || key === 'ArrowDown'
+
+  const candidates = rects
+    .map((rect, index) => {
+      const centerX = rect.left + rect.width / 2
+      const centerY = rect.top + rect.height / 2
+      return {
+        index,
+        rect,
+        centerX,
+        centerY,
+        deltaX: centerX - currentX,
+        deltaY: centerY - currentY
+      }
+    })
+    .filter(({ index, deltaX, deltaY }) => {
+      if (index === currentIndex) return false
+      const primary = horizontal ? deltaX : deltaY
+      return forward ? primary > 1 : primary < -1
+    })
+
+  if (horizontal) {
+    const sameRowCandidates = candidates.filter(({ rect }) => areInSameVisualRow(current, rect))
+    return closestCandidateIndex(sameRowCandidates, (candidate) => Math.abs(candidate.deltaX))
+  }
+
+  const nextRowCandidates = candidates.filter(({ rect }) => !areInSameVisualRow(current, rect))
+  if (nextRowCandidates.length === 0) return null
+
+  const nearestRowAnchor = nextRowCandidates.reduce((nearest, candidate) =>
+    Math.abs(candidate.deltaY) < Math.abs(nearest.deltaY) ? candidate : nearest
+  )
+  const nearestRowCandidates = nextRowCandidates.filter(({ rect }) =>
+    areInSameVisualRow(nearestRowAnchor.rect, rect)
+  )
+  return closestCandidateIndex(nearestRowCandidates, (candidate) =>
+    Math.abs(candidate.centerX - currentX)
+  )
+}
+
+function areInSameVisualRow(left: FocusRect, right: FocusRect): boolean {
+  const leftCenterY = left.top + left.height / 2
+  const rightCenterY = right.top + right.height / 2
+  const tolerance = Math.max(8, Math.min(left.height, right.height) / 2)
+  return Math.abs(leftCenterY - rightCenterY) <= tolerance
+}
+
+function closestCandidateIndex<T extends { index: number }>(
+  candidates: readonly T[],
+  distance: (candidate: T) => number
+): number | null {
   let bestIndex: number | null = null
-  let bestScore = Number.POSITIVE_INFINITY
-
-  rects.forEach((rect, index) => {
-    if (index === currentIndex) return
-
-    const deltaX = rect.left + rect.width / 2 - currentX
-    const deltaY = rect.top + rect.height / 2 - currentY
-    const primary = horizontal ? deltaX : deltaY
-    const secondary = horizontal ? deltaY : deltaX
-    if ((forward && primary <= 1) || (!forward && primary >= -1)) return
-
-    const score = Math.abs(primary) + Math.abs(secondary) * 1.5
-    if (score < bestScore) {
-      bestScore = score
-      bestIndex = index
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const candidate of candidates) {
+    const candidateDistance = distance(candidate)
+    if (candidateDistance < bestDistance) {
+      bestIndex = candidate.index
+      bestDistance = candidateDistance
     }
-  })
-
+  }
   return bestIndex
 }
 

@@ -708,7 +708,12 @@ function SalesScreen(): React.JSX.Element {
                                   .join(' ')}
                                 key={sale.id}
                               >
-                                <td className="sale-number">{sale.transactionNumber}</td>
+                                <td className="sale-number">
+                                  {sale.transactionNumber}
+                                  {sale.customer && (
+                                    <span className="sale-customer-name">{sale.customer.name}</span>
+                                  )}
+                                </td>
                                 <td>{formatDate(sale.createdAt)}</td>
                                 <td className="payment-method">{formatPaymentMethod(sale)}</td>
                                 <td>{sale.itemCount}</td>
@@ -877,6 +882,14 @@ function SaleDetailView({ sale, onBack, onUpdated }: SaleDetailViewProps): React
             {sale.transactionType === 'return' ? 'Return' : 'Invoice'} #{sale.transactionNumber}
           </h2>
           <p className="sale-detail-date">{formatDate(sale.createdAt)}</p>
+          {sale.customer && (
+            <p className="sale-detail-customer">
+              Customer: {sale.customer.name}
+              {sale.customer.companyName && sale.customer.companyName !== sale.customer.name
+                ? ` · ${sale.customer.companyName}`
+                : ''}
+            </p>
+          )}
         </div>
         <span className="payment-badge">{formatPaymentMethod(sale)}</span>
       </div>

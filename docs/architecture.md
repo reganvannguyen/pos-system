@@ -70,6 +70,7 @@ React should call these APIs rather than importing Node/Electron modules directl
 SQLite stores all persistent local data:
 
 - Products.
+- Customers and their optional image data.
 - Sales.
 - Sale items.
 - Settings.

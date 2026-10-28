@@ -47,6 +47,11 @@ const schema =
   readFileSync(
     join(process.cwd(), 'src/main/database/migrations/010_charge_payment_tenders.sql'),
     'utf8'
+  ) +
+  readFileSync(join(process.cwd(), 'src/main/database/migrations/011_customers.sql'), 'utf8') +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/012_transaction_customers.sql'),
+    'utf8'
   )
 
 test('reads defaults and trims business names', () => {

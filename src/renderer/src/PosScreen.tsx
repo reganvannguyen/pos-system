@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, FormEvent, SetStateAction } from 'react'
 import type {
   CheckoutQuote,
-  ChargeCustomer,
+  Customer,
   ReturnQuote,
   SaleDetail,
   TenderInput,
   TenderType
 } from '../../shared/pos-api'
 import ReceiptDialog from './ReceiptDialog'
+import { CustomerLookupDialog } from './CustomersScreen'
 import {
   addProductToCart,
   changeCartQuantity,
@@ -43,6 +44,10 @@ const currencyFormatter = new Intl.NumberFormat('en-CA', {
 })
 const emptyTenders: TenderInput[] = []
 
+function customerName(customer: Customer): string {
+  return [customer.firstName, customer.lastName].filter(Boolean).join(' ') || customer.companyName
+}
+
 interface PosScreenProps {
   cart: CartLine[]
   setCart: Dispatch<SetStateAction<CartLine[]>>
@@ -52,6 +57,8 @@ interface PosScreenProps {
   setMode: Dispatch<SetStateAction<'sale' | 'return'>>
   returnReason: string
   setReturnReason: Dispatch<SetStateAction<string>>
+  selectedCustomer: Customer | null
+  setSelectedCustomer: Dispatch<SetStateAction<Customer | null>>
   onNavigateToProducts: () => void
 }
 
@@ -75,6 +82,8 @@ function PosScreen({
   setMode,
   returnReason,
   setReturnReason,
+  selectedCustomer,
+  setSelectedCustomer,
   onNavigateToProducts
 }: PosScreenProps): React.JSX.Element {
   const [skuInput, setSkuInput] = useState('')
@@ -84,7 +93,8 @@ function PosScreen({
   const [quoteState, setQuoteState] = useState<QuoteState | null>(null)
   const [quoteRetryKey, setQuoteRetryKey] = useState(0)
   const [paymentMethodPickerOpen, setPaymentMethodPickerOpen] = useState(false)
-  const [chargeCustomerDialogOpen, setChargeCustomerDialogOpen] = useState(false)
+  const [customerLookupOpen, setCustomerLookupOpen] = useState(false)
+  const [chargeSelectionPending, setChargeSelectionPending] = useState(false)
   const [tenderDialogType, setTenderDialogType] = useState<TenderType | null>(null)
   const [paymentActive, setPaymentActive] = useState(false)
   const [priceDialogLine, setPriceDialogLine] = useState<QuoteItem | null>(null)
@@ -102,6 +112,7 @@ function PosScreen({
   const addPaymentButtonRef = useRef<HTMLButtonElement>(null)
   const completeTransactionButtonRef = useRef<HTMLButtonElement>(null)
   const lookupQueue = useRef<Promise<void>>(Promise.resolve())
+  const previousCartLength = useRef(cart.length)
   const itemCount = cart.reduce((count, line) => count + line.quantity, 0)
   const quoteMatchesCurrentCart =
     quoteState?.cart === cart &&
@@ -118,7 +129,7 @@ function PosScreen({
   const quoteLoading = cart.length > 0 && !quoteMatchesCurrentCart && !returnReasonMissing
   const displayLines = quote?.items ?? cart
   const tenders = checkoutSession?.tenders ?? emptyTenders
-  const chargeCustomer = checkoutSession?.chargeCustomer ?? null
+  const chargeRemainingBalance = checkoutSession?.chargeRemainingBalance === true
   const selectedCartLine =
     selectedCartLineIndex === null ? null : (cart[selectedCartLineIndex] ?? null)
   const paymentTargetCents = quote ? Math.abs(quote.totalCents) : 0
@@ -130,10 +141,10 @@ function PosScreen({
   }, [mode, paymentTargetCents, quote, tenders])
   const tenderSummaryInvalid = tenderSummary?.valid === false
   const tenderRemainingCents = tenderSummary?.remainingCents
-  const hasChargeCustomer = chargeCustomer !== null
+  const hasStagedCharge = chargeRemainingBalance
   const hasCheckoutSession = checkoutSession !== null
   const hasPriceDialogLine = priceDialogLine !== null
-  const chargeAmountCents = chargeCustomer ? (tenderSummary?.remainingCents ?? 0) : 0
+  const chargeAmountCents = chargeRemainingBalance ? (tenderSummary?.remainingCents ?? 0) : 0
   const sessionNeedsResume = checkoutSession !== null && !paymentActive
   const cartLocked =
     savingSale || checkoutSession !== null || paymentActive || lineSelectionMode !== null
@@ -161,6 +172,11 @@ function PosScreen({
   useEffect(() => {
     inputRef.current?.focus()
   }, [])
+
+  useEffect(() => {
+    if (previousCartLength.current > 0 && cart.length === 0) setSelectedCustomer(null)
+    previousCartLength.current = cart.length
+  }, [cart.length, setSelectedCustomer])
 
   useEffect(() => {
     let current = true
@@ -222,7 +238,7 @@ function PosScreen({
   useEffect(() => {
     if (
       !paymentMethodPickerOpen &&
-      !chargeCustomerDialogOpen &&
+      !customerLookupOpen &&
       !tenderDialogType &&
       !priceDialogLine &&
       !confirmTransaction &&
@@ -234,7 +250,7 @@ function PosScreen({
     }
   }, [
     paymentMethodPickerOpen,
-    chargeCustomerDialogOpen,
+    customerLookupOpen,
     tenderDialogType,
     priceDialogLine,
     confirmTransaction,
@@ -247,7 +263,7 @@ function PosScreen({
     (type: TenderType): void => {
       if (
         checkoutDisabled ||
-        hasChargeCustomer ||
+        hasStagedCharge ||
         tenderSummaryInvalid ||
         tenderRemainingCents === 0 ||
         tenderDialogType ||
@@ -261,7 +277,7 @@ function PosScreen({
     },
     [
       checkoutDisabled,
-      hasChargeCustomer,
+      hasStagedCharge,
       tenderSummaryInvalid,
       tenderRemainingCents,
       confirmTransaction,
@@ -273,7 +289,7 @@ function PosScreen({
   const openTenderPicker = useCallback((): void => {
     if (
       checkoutDisabled ||
-      hasChargeCustomer ||
+      hasStagedCharge ||
       tenderSummaryInvalid ||
       tenderRemainingCents === 0 ||
       paymentMethodPickerOpen ||
@@ -287,7 +303,7 @@ function PosScreen({
     setPaymentMethodPickerOpen(true)
   }, [
     checkoutDisabled,
-    hasChargeCustomer,
+    hasStagedCharge,
     hasCheckoutSession,
     tenderSummaryInvalid,
     tenderRemainingCents,
@@ -303,7 +319,12 @@ function PosScreen({
     if (tenderSummary?.remainingCents === 0 || confirmTransaction || priceDialogLine) return
     setCheckoutError('')
     setPaymentActive(true)
-    setChargeCustomerDialogOpen(true)
+    if (selectedCustomer) {
+      stageCharge(selectedCustomer)
+    } else {
+      setChargeSelectionPending(true)
+      setCustomerLookupOpen(true)
+    }
   }
 
   const changeRegisterMode = useCallback(
@@ -322,7 +343,8 @@ function PosScreen({
       setPaymentActive(false)
       setTenderDialogType(null)
       setPaymentMethodPickerOpen(false)
-      setChargeCustomerDialogOpen(false)
+      setCustomerLookupOpen(false)
+      setChargeSelectionPending(false)
       setPriceDialogLine(null)
       setConfirmTransaction(false)
       setReturnReason('')
@@ -331,6 +353,7 @@ function PosScreen({
       setCheckoutError('')
       setCompletedSale(null)
       setReceiptDialogSale(null)
+      setSelectedCustomer(null)
       setMode(nextMode)
       window.requestAnimationFrame(() => inputRef.current?.focus())
     },
@@ -342,7 +365,8 @@ function PosScreen({
       setCart,
       setCheckoutSession,
       setMode,
-      setReturnReason
+      setReturnReason,
+      setSelectedCustomer
     ]
   )
 
@@ -386,7 +410,7 @@ function PosScreen({
 
     function handlePosShortcut(event: KeyboardEvent): void {
       const hasNoModifiers = !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
-      const reservedFunctionKey = ['F2', 'F3', 'F4', 'F5', 'F6', 'F9'].includes(event.key)
+      const reservedFunctionKey = ['F2', 'F3', 'F4', 'F5', 'F6', 'F8', 'F9'].includes(event.key)
       if (hasNoModifiers && reservedFunctionKey) event.preventDefault()
 
       if (lineSelectionMode !== null && hasNoModifiers) {
@@ -442,6 +466,7 @@ function PosScreen({
 
       const dialogOpen =
         document.querySelector('dialog[open]') !== null ||
+        customerLookupOpen ||
         paymentMethodPickerOpen ||
         tenderDialogType !== null ||
         priceDialogLine !== null ||
@@ -475,6 +500,8 @@ function PosScreen({
         dialogOpen,
         skuEnabled: !cartLocked,
         productsEnabled: pendingLookups === 0 && !savingSale,
+        customerPickerEnabled:
+          pendingLookups === 0 && !savingSale && !paymentActive && lineSelectionMode === null,
         clearEnabled: cart.length > 0 && !cartLocked && pendingLookups === 0,
         lineSelectionEnabled: cart.length > 0 && !cartLocked && pendingLookups === 0,
         priceEditEnabled:
@@ -496,6 +523,8 @@ function PosScreen({
         changeRegisterMode(mode === 'sale' ? 'return' : 'sale')
       } else if (action === 'navigate-products') {
         onNavigateToProducts()
+      } else if (action === 'open-customer-picker') {
+        setCustomerLookupOpen(true)
       } else if (action === 'clear-cart') {
         clearCartButtonRef.current?.click()
       } else if (action === 'select-line-for-removal') {
@@ -515,12 +544,14 @@ function PosScreen({
     changeRegisterMode,
     checkoutDisabled,
     displayLines,
+    customerLookupOpen,
     focusCartLineAtIndex,
     lineSelectionMode,
     mode,
     onNavigateToProducts,
     openTenderPicker,
     pendingLookups,
+    paymentActive,
     paymentMethodPickerOpen,
     priceDialogLine,
     quote,
@@ -528,7 +559,9 @@ function PosScreen({
     receiptDialogSale,
     savingSale,
     selectedCartLineIndex,
+    setCustomerLookupOpen,
     setCart,
+    setSelectedCustomer,
     startLineSelection,
     tenderDialogType,
     tenderSummary
@@ -609,15 +642,17 @@ function PosScreen({
     return null
   }
 
-  function stageCharge(customer: ChargeCustomer): string | null {
+  function stageCharge(customer: Customer): string | null {
     const remainingCents = tenderSummary?.remainingCents
     if (!quote || mode !== 'sale' || remainingCents === undefined || remainingCents <= 0) {
       return 'There is no remaining balance to charge.'
     }
     if (!tenderSummary?.valid) return tenderSummary?.error || 'Correct the staged payments first.'
-    setCheckoutSession({ tenders, chargeCustomer: customer })
+    setSelectedCustomer(customer)
+    setCheckoutSession({ tenders, chargeRemainingBalance: true })
     setPaymentActive(true)
-    setChargeCustomerDialogOpen(false)
+    setCustomerLookupOpen(false)
+    setChargeSelectionPending(false)
     setCheckoutError('')
     setConfirmTransaction(true)
     return null
@@ -635,9 +670,31 @@ function PosScreen({
   }
 
   function cancelChargeEntry(): void {
-    setChargeCustomerDialogOpen(false)
+    setCustomerLookupOpen(false)
+    setChargeSelectionPending(false)
     if (!checkoutSession) setPaymentActive(false)
     window.requestAnimationFrame(() => addPaymentButtonRef.current?.focus())
+  }
+
+  function handleCustomerSelected(customer: Customer | null): void {
+    setSelectedCustomer(customer)
+    setCustomerLookupOpen(false)
+    if (chargeSelectionPending) {
+      setChargeSelectionPending(false)
+      if (customer) stageCharge(customer)
+      else cancelChargeEntry()
+      return
+    }
+    if (!customer && chargeRemainingBalance) {
+      setCheckoutSession(tenders.length > 0 ? { tenders } : null)
+      setPaymentActive(false)
+      setConfirmTransaction(false)
+    }
+  }
+
+  function cancelCustomerLookup(): void {
+    if (chargeSelectionPending) cancelChargeEntry()
+    else setCustomerLookupOpen(false)
   }
 
   function cancelTransactionConfirmation(): void {
@@ -648,8 +705,8 @@ function PosScreen({
   function removeTender(index: number): void {
     const nextTenders = tenders.filter((_, tenderIndex) => tenderIndex !== index)
     setCheckoutSession(
-      chargeCustomer
-        ? { tenders: nextTenders, chargeCustomer }
+      chargeRemainingBalance
+        ? { tenders: nextTenders, chargeRemainingBalance: true }
         : nextTenders.length > 0
           ? { tenders: nextTenders }
           : null
@@ -671,7 +728,7 @@ function PosScreen({
 
   function discardPaymentSession(): void {
     if (
-      (tenders.length > 0 || chargeCustomer) &&
+      (tenders.length > 0 || chargeRemainingBalance) &&
       !window.confirm('Discard all staged payments? The cart will remain.')
     ) {
       return
@@ -685,7 +742,7 @@ function PosScreen({
 
   function resumePayment(): void {
     setPaymentActive(true)
-    if (checkoutSession?.chargeCustomer) setConfirmTransaction(true)
+    if (checkoutSession?.chargeRemainingBalance) setConfirmTransaction(true)
     window.requestAnimationFrame(() => addPaymentButtonRef.current?.focus())
   }
 
@@ -699,7 +756,7 @@ function PosScreen({
   }
 
   async function completeTransaction(): Promise<void> {
-    const hasCharge = mode === 'sale' && chargeCustomer !== null
+    const hasCharge = mode === 'sale' && chargeRemainingBalance
     if (
       !quote ||
       !tenderSummary?.valid ||
@@ -720,7 +777,8 @@ function PosScreen({
             restock: restock ?? false
           })),
           reason: returnReason,
-          tenders
+          tenders,
+          ...(selectedCustomer && { customerId: selectedCustomer.id })
         })
         if (!result.ok) {
           setCheckoutError(result.error.message)
@@ -737,7 +795,8 @@ function PosScreen({
             ...(priceOverride && { priceOverride })
           })),
           tenders,
-          ...(chargeCustomer && { chargeCustomer })
+          ...(selectedCustomer && { customerId: selectedCustomer.id }),
+          ...(chargeRemainingBalance && { chargeRemainingBalance: true })
         })
         if (!result.ok) {
           setCheckoutError(result.error.message)
@@ -751,6 +810,7 @@ function PosScreen({
       setCompletedSale(transaction)
       setCart((current) => clearCart(current))
       setCheckoutSession(null)
+      setSelectedCustomer(null)
       if (mode === 'return') setReturnReason('')
       setPaymentActive(false)
       setTenderDialogType(null)
@@ -856,6 +916,40 @@ function PosScreen({
           </p>
         </div>
       )}
+
+      <div className="pos-customer-selection" aria-label="Customer for this transaction">
+        <div>
+          <span className="eyebrow">Customer</span>
+          <strong>
+            {selectedCustomer ? customerName(selectedCustomer) : 'No customer selected'}
+          </strong>
+          {selectedCustomer?.companyName && <small>{selectedCustomer.companyName}</small>}
+        </div>
+        <div className="pos-customer-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={
+              savingSale || paymentActive || pendingLookups > 0 || lineSelectionMode !== null
+            }
+            onClick={() => setCustomerLookupOpen(true)}
+          >
+            {selectedCustomer ? 'Change customer' : 'Select customer'} <kbd>F8</kbd>
+          </button>
+          {selectedCustomer && (
+            <button
+              className="text-button danger-text"
+              type="button"
+              disabled={
+                savingSale || paymentActive || pendingLookups > 0 || lineSelectionMode !== null
+              }
+              onClick={() => setSelectedCustomer(null)}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
 
       <div className="pos-register-layout">
         <div className="pos-workspace">
@@ -1186,7 +1280,7 @@ function PosScreen({
                   <span>
                     {mode === 'return'
                       ? 'Total payout'
-                      : chargeCustomer
+                      : chargeRemainingBalance
                         ? 'Paid now'
                         : 'Total tendered'}
                   </span>
@@ -1196,13 +1290,13 @@ function PosScreen({
                   <span>
                     {mode === 'return'
                       ? 'Remaining to refund'
-                      : chargeCustomer
+                      : chargeRemainingBalance
                         ? 'On charge'
                         : 'Remaining'}
                   </span>
                   <strong>
                     {amount(
-                      chargeCustomer
+                      chargeRemainingBalance
                         ? chargeAmountCents
                         : (tenderSummary?.remainingCents ?? total ?? 0)
                     )}
@@ -1249,11 +1343,13 @@ function PosScreen({
                   })}
                 </ul>
               )}
-              {chargeCustomer && (
+              {chargeRemainingBalance && (
                 <ul className="staged-payment-list" aria-label="Charge details">
                   <li>
                     <span>
-                      <strong>Charge · {chargeCustomer.name}</strong>
+                      <strong>
+                        Charge · {selectedCustomer ? customerName(selectedCustomer) : ''}
+                      </strong>
                       <small>{amount(chargeAmountCents)} due after this sale</small>
                     </span>
                     <button
@@ -1281,7 +1377,7 @@ function PosScreen({
                   {checkoutError}
                 </p>
               )}
-              {tenderSummary?.remainingCents !== 0 && !chargeCustomer && (
+              {tenderSummary?.remainingCents !== 0 && !chargeRemainingBalance && (
                 <div className="checkout-payment-actions">
                   <button
                     className="primary-button payment-button"
@@ -1303,7 +1399,8 @@ function PosScreen({
                   </p>
                 </div>
               )}
-              {tenderSummary?.valid && (tenderSummary.remainingCents === 0 || chargeCustomer) ? (
+              {tenderSummary?.valid &&
+              (tenderSummary.remainingCents === 0 || chargeRemainingBalance) ? (
                 <button
                   className="primary-button payment-complete-button"
                   ref={completeTransactionButtonRef}
@@ -1319,7 +1416,7 @@ function PosScreen({
                 type="button"
                 onClick={discardPaymentSession}
               >
-                {tenders.length > 0 || chargeCustomer
+                {tenders.length > 0 || chargeRemainingBalance
                   ? 'Discard payment session'
                   : 'Return to cart'}
               </button>
@@ -1393,6 +1490,10 @@ function PosScreen({
                 <span>Edit item price (Sale mode)</span>
               </li>
               <li>
+                <kbd>F8</kbd>
+                <span>Select customer</span>
+              </li>
+              <li>
                 <kbd>F9</kbd>
                 <span>Add payment</span>
               </li>
@@ -1422,11 +1523,11 @@ function PosScreen({
           }}
         />
       )}
-      {chargeCustomerDialogOpen && quote && tenderSummary && (
-        <ChargeCustomerDialog
-          remainingCents={tenderSummary.remainingCents}
-          onCancel={cancelChargeEntry}
-          onSubmit={stageCharge}
+      {customerLookupOpen && (
+        <CustomerLookupDialog
+          selectedCustomerId={selectedCustomer?.id ?? null}
+          onCancel={cancelCustomerLookup}
+          onSelect={handleCustomerSelected}
         />
       )}
       {tenderDialogType && quote && (
@@ -1446,7 +1547,9 @@ function PosScreen({
           totalCents={quote.totalCents}
           tenderedCents={totalTenderedCents(tenders)}
           chargeAmountCents={chargeAmountCents}
-          customerName={chargeCustomer?.name ?? null}
+          customerName={
+            chargeRemainingBalance && selectedCustomer ? customerName(selectedCustomer) : null
+          }
           changeCents={tenderSummary.changeCents}
           saving={savingSale}
           error={checkoutError}
@@ -1684,145 +1787,6 @@ function PaymentMethodPickerDialog({
           Cancel
         </button>
       </div>
-    </dialog>
-  )
-}
-
-interface ChargeCustomerDialogProps {
-  remainingCents: number
-  onCancel: () => void
-  onSubmit: (customer: ChargeCustomer) => string | null
-}
-
-function ChargeCustomerDialog({
-  remainingCents,
-  onCancel,
-  onSubmit
-}: ChargeCustomerDialogProps): React.JSX.Element {
-  const dialogRef = useRef<HTMLDialogElement>(null)
-  const [customer, setCustomer] = useState<ChargeCustomer>({
-    name: '',
-    companyName: '',
-    address: '',
-    phoneNumber: '',
-    email: ''
-  })
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    const dialog = dialogRef.current
-    if (dialog && !dialog.open) dialog.showModal()
-    return () => {
-      if (dialog?.open) dialog.close()
-    }
-  }, [])
-
-  function submit(event: FormEvent<HTMLFormElement>): void {
-    event.preventDefault()
-    if (!customer.name.trim()) {
-      setError('Enter the customer name.')
-      return
-    }
-    const result = onSubmit({
-      name: customer.name.trim(),
-      companyName: customer.companyName.trim(),
-      address: customer.address.trim(),
-      phoneNumber: customer.phoneNumber.trim(),
-      email: customer.email.trim()
-    })
-    if (result) setError(result)
-  }
-
-  function update(field: keyof ChargeCustomer, value: string): void {
-    setCustomer((current) => ({ ...current, [field]: value }))
-  }
-
-  return (
-    <dialog
-      className="product-dialog checkout-dialog"
-      ref={dialogRef}
-      aria-labelledby="charge-customer-title"
-      onCancel={(event) => {
-        event.preventDefault()
-        onCancel()
-      }}
-    >
-      <div className="dialog-heading">
-        <div>
-          <p className="eyebrow">Charge {currencyFormatter.format(remainingCents / 100)}</p>
-          <h2 id="charge-customer-title">Customer details</h2>
-        </div>
-        <button
-          className="dialog-close-button"
-          type="button"
-          aria-label="Cancel charge"
-          onClick={onCancel}
-        >
-          ×
-        </button>
-      </div>
-      <form onSubmit={submit}>
-        <div className="checkout-confirmation price-override-fields">
-          <label>
-            <span>Customer name</span>
-            <input
-              autoFocus
-              required
-              maxLength={200}
-              value={customer.name}
-              onChange={(event) => update('name', event.target.value)}
-            />
-          </label>
-          <label>
-            <span>Company name (optional)</span>
-            <input
-              maxLength={200}
-              value={customer.companyName}
-              onChange={(event) => update('companyName', event.target.value)}
-            />
-          </label>
-          <label>
-            <span>Address (optional)</span>
-            <textarea
-              rows={2}
-              maxLength={500}
-              value={customer.address}
-              onChange={(event) => update('address', event.target.value)}
-            />
-          </label>
-          <label>
-            <span>Phone number (optional)</span>
-            <input
-              type="tel"
-              maxLength={50}
-              value={customer.phoneNumber}
-              onChange={(event) => update('phoneNumber', event.target.value)}
-            />
-          </label>
-          <label>
-            <span>Email (optional)</span>
-            <input
-              type="email"
-              maxLength={254}
-              value={customer.email}
-              onChange={(event) => update('email', event.target.value)}
-            />
-          </label>
-          {error && (
-            <p className="product-banner-error" role="alert">
-              {error}
-            </p>
-          )}
-        </div>
-        <div className="dialog-actions checkout-dialog-actions">
-          <button className="secondary-button" type="button" onClick={onCancel}>
-            Cancel
-          </button>
-          <button className="primary-button" type="submit">
-            Charge remaining balance
-          </button>
-        </div>
-      </form>
     </dialog>
   )
 }

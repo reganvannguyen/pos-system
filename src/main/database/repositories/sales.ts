@@ -1,9 +1,4 @@
-import type {
-  ChargeCustomer,
-  ChargePaymentTenderType,
-  TenderInput,
-  CheckoutItem
-} from '../../../shared/pos-api'
+import type { ChargePaymentTenderType, TenderInput, CheckoutItem } from '../../../shared/pos-api'
 import type {
   ChargePaymentRecord,
   PosDatabase,
@@ -55,9 +50,18 @@ export interface SaleTaxBreakdownRecord {
 
 export interface SaleSummaryRecord extends SaleRecord {
   item_count: number
+  customer_first_name: string | null
+  customer_last_name: string | null
+  customer_company_name: string | null
   payments: SalePaymentRecord[]
   charge: SaleChargeRecord | null
 }
+
+type SaleSummaryQueryRecord = SaleRecord &
+  Pick<
+    SaleSummaryRecord,
+    'item_count' | 'customer_first_name' | 'customer_last_name' | 'customer_company_name'
+  >
 
 export interface SaleTaxReportRecord {
   sale_id: number
@@ -125,7 +129,11 @@ export class SalesRepositoryError extends Error {
 }
 
 const saleSummaryColumns = `sales.id, sales.subtotal_cents, sales.tax_cents, sales.total_cents,
-  sales.payment_method, sales.transaction_type, sales.transaction_number, sales.return_reason, sales.created_at,
+  sales.customer_id, sales.payment_method, sales.transaction_type, sales.transaction_number,
+  sales.return_reason, sales.created_at,
+  customers.first_name AS customer_first_name,
+  customers.last_name AS customer_last_name,
+  customers.company_name AS customer_company_name,
   (SELECT COUNT(*) FROM sale_items WHERE sale_items.sale_id = sales.id) AS item_count`
 
 export function createSalesRepository(
@@ -135,12 +143,14 @@ export function createSalesRepository(
   const listRecentStatement = database.prepare(
     `SELECT ${saleSummaryColumns}
      FROM sales
+     LEFT JOIN customers ON customers.id = sales.customer_id
      ORDER BY sales.created_at DESC, sales.id DESC
      LIMIT ?`
   )
   const listInRangeStatement = database.prepare(
     `SELECT ${saleSummaryColumns}
      FROM sales
+     LEFT JOIN customers ON customers.id = sales.customer_id
      WHERE sales.created_at >= @startInclusive AND sales.created_at < @endExclusive
      ORDER BY sales.created_at DESC, sales.id DESC`
   )
@@ -164,6 +174,7 @@ export function createSalesRepository(
   const getSaleStatement = database.prepare(
     `SELECT ${saleSummaryColumns}
      FROM sales
+     LEFT JOIN customers ON customers.id = sales.customer_id
      WHERE sales.id = ?`
   )
   const listItemsStatement = database.prepare(
@@ -185,11 +196,16 @@ export function createSalesRepository(
      FROM products
      WHERE id = ?`
   )
+  const getCustomerForChargeStatement = database.prepare(
+    `SELECT first_name, last_name, company_name, address, phone_number, email
+     FROM customers
+     WHERE id = ?`
+  )
   const insertSaleStatement = database.prepare(
     `INSERT INTO sales
-       (subtotal_cents, tax_cents, total_cents, payment_method, transaction_type,
+       (subtotal_cents, tax_cents, total_cents, customer_id, payment_method, transaction_type,
         transaction_number, return_reason, created_at)
-     VALUES (@subtotalCents, @taxCents, @totalCents, @paymentMethod, @transactionType,
+     VALUES (@subtotalCents, @taxCents, @totalCents, @customerId, @paymentMethod, @transactionType,
              @transactionNumber, @returnReason, @createdAt)`
   )
   const insertSaleItemStatement = database.prepare(
@@ -252,9 +268,7 @@ export function createSalesRepository(
      WHERE id = @productId AND stock_quantity IS NOT NULL`
   )
 
-  function attachPayments<T extends SaleRecord & { item_count: number }>(
-    rows: T[]
-  ): SaleSummaryRecord[] {
+  function attachPayments(rows: SaleSummaryQueryRecord[]): SaleSummaryRecord[] {
     if (rows.length === 0) return []
     const paymentsBySaleId = new Map<number, SalePaymentRecord[]>()
     const ids = rows.map((row) => row.id)
@@ -334,7 +348,7 @@ export function createSalesRepository(
   }
 
   function getDetail(id: number): SaleDetailRecord | undefined {
-    const sale = getSaleStatement.get(id) as (SaleRecord & { item_count: number }) | undefined
+    const sale = getSaleStatement.get(id) as SaleSummaryQueryRecord | undefined
     if (!sale) return undefined
     const summary = attachPayments([sale])[0]
     if (!summary) return undefined
@@ -455,20 +469,43 @@ export function createSalesRepository(
     (input: {
       items: SaleLineInput[]
       tenders: TenderInput[]
-      chargeCustomer?: ChargeCustomer
+      customerId?: number
+      chargeRemainingBalance?: boolean
     }): SaleDetailRecord => {
       const quote = resolveQuote(input.items)
+      const customer =
+        input.customerId === undefined
+          ? undefined
+          : (getCustomerForChargeStatement.get(input.customerId) as
+              | {
+                  first_name: string
+                  last_name: string
+                  company_name: string
+                  address: string
+                  phone_number: string
+                  email: string
+                }
+              | undefined)
+      if (input.customerId !== undefined && !customer) {
+        throw new SalesRepositoryError('not-found', 'The selected customer could not be found.')
+      }
+      if (input.chargeRemainingBalance && !customer) {
+        throw new SalesRepositoryError(
+          'invalid-input',
+          'Select a customer before charging the remaining balance.'
+        )
+      }
       const allocations = allocatePayments(
         quote.total_cents,
         input.tenders,
-        Boolean(input.chargeCustomer)
+        input.chargeRemainingBalance === true
       )
       const amountPaidCents = allocations.reduce(
         (total, payment) => total + payment.amountAppliedCents,
         0
       )
       const chargeAmountCents = quote.total_cents - amountPaidCents
-      if (input.chargeCustomer && chargeAmountCents <= 0) {
+      if (input.chargeRemainingBalance && chargeAmountCents <= 0) {
         throw new SalesRepositoryError(
           'invalid-input',
           'A charge must cover a remaining balance above $0.00.'
@@ -483,6 +520,7 @@ export function createSalesRepository(
         subtotalCents: quote.subtotal_cents,
         taxCents: quote.tax_cents,
         totalCents: quote.total_cents,
+        customerId: input.customerId ?? null,
         paymentMethod,
         transactionType: 'sale',
         transactionNumber: nextTransactionNumber(database, now),
@@ -542,10 +580,15 @@ export function createSalesRepository(
         })
       }
 
-      if (input.chargeCustomer) {
+      if (input.chargeRemainingBalance && customer) {
+        const name = [customer.first_name, customer.last_name].filter(Boolean).join(' ')
         insertSaleChargeStatement.run({
           saleId,
-          ...input.chargeCustomer,
+          name: name || customer.company_name,
+          companyName: customer.company_name,
+          address: customer.address,
+          phoneNumber: customer.phone_number,
+          email: customer.email,
           amountCents: chargeAmountCents
         })
       }
@@ -561,9 +604,13 @@ export function createSalesRepository(
       items: ReturnLineInput[]
       reason: string
       tenders: TenderInput[]
+      customerId?: number
     }): SaleDetailRecord => {
       const quote = resolveReturnQuote(input.items)
       const allocations = allocateReturnPayments(quote.total_cents, input.tenders)
+      if (input.customerId !== undefined && !getCustomerForChargeStatement.get(input.customerId)) {
+        throw new SalesRepositoryError('not-found', 'The selected customer could not be found.')
+      }
       const paymentMethod =
         input.tenders.length === 0 || input.tenders.every((tender) => tender.type === 'cash')
           ? 'cash'
@@ -573,6 +620,7 @@ export function createSalesRepository(
         subtotalCents: quote.subtotal_cents,
         taxCents: quote.tax_cents,
         totalCents: quote.total_cents,
+        customerId: input.customerId ?? null,
         paymentMethod,
         transactionType: 'return',
         transactionNumber: nextTransactionNumber(database, now),
@@ -698,7 +746,8 @@ export function createSalesRepository(
     completeCheckout(input: {
       items: SaleLineInput[]
       tenders: TenderInput[]
-      chargeCustomer?: ChargeCustomer
+      customerId?: number
+      chargeRemainingBalance?: boolean
     }) {
       if (input.items.length === 0)
         throw new SalesRepositoryError('invalid-input', 'The cart is empty.')
@@ -711,7 +760,12 @@ export function createSalesRepository(
     }) {
       return recordChargePayment.immediate(input)
     },
-    completeReturn(input: { items: ReturnLineInput[]; reason: string; tenders: TenderInput[] }) {
+    completeReturn(input: {
+      items: ReturnLineInput[]
+      reason: string
+      tenders: TenderInput[]
+      customerId?: number
+    }) {
       if (input.items.length === 0)
         throw new SalesRepositoryError('invalid-input', 'Add at least one product to the return.')
       return completeReturnTransaction.immediate(input)
@@ -720,13 +774,14 @@ export function createSalesRepository(
       if (!Number.isInteger(limit) || limit < 1) {
         throw new RangeError('The sales limit must be a positive integer.')
       }
-      const rows = listRecentStatement.all(limit) as Array<SaleRecord & { item_count: number }>
+      const rows = listRecentStatement.all(limit) as SaleSummaryQueryRecord[]
       return attachPayments(rows)
     },
     listInRange(startInclusive: string, endExclusive: string): SaleSummaryRecord[] {
-      const rows = listInRangeStatement.all({ startInclusive, endExclusive }) as Array<
-        SaleRecord & { item_count: number }
-      >
+      const rows = listInRangeStatement.all({
+        startInclusive,
+        endExclusive
+      }) as SaleSummaryQueryRecord[]
       return attachPayments(rows)
     },
     taxLinesInRange(startInclusive: string, endExclusive: string): SaleTaxReportRecord[] {

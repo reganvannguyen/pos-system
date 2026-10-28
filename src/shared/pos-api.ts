@@ -1,5 +1,8 @@
 export const IPC_CHANNELS = {
   appGetVersion: 'app:get-version',
+  customersList: 'customers:list',
+  customersCreate: 'customers:create',
+  customersUpdate: 'customers:update',
   productsList: 'products:list',
   productsGetBySku: 'products:get-by-sku',
   productsGetBySkuForReturn: 'products:get-by-sku-for-return',
@@ -32,6 +35,39 @@ export const IPC_CHANNELS = {
 } as const
 
 export type ProductStatus = 'active' | 'inactive'
+
+export interface Customer {
+  id: number
+  firstName: string
+  lastName: string
+  companyName: string
+  address: string
+  phoneNumber: string
+  email: string
+  imageDataUrl: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CustomerInput {
+  firstName: string
+  lastName: string
+  companyName: string
+  address: string
+  phoneNumber: string
+  email: string
+  imageDataUrl: string | null
+}
+
+export type CustomerField = keyof CustomerInput
+
+export interface CustomerApiError {
+  code: 'invalid-input' | 'not-found' | 'internal'
+  message: string
+  field?: CustomerField
+}
+
+export type CustomerResult<T> = { ok: true; data: T } | { ok: false; error: CustomerApiError }
 
 export interface Product {
   id: number
@@ -118,7 +154,8 @@ export interface TenderInput {
 export interface CheckoutRequest {
   items: CheckoutItem[]
   tenders: TenderInput[]
-  chargeCustomer?: ChargeCustomer
+  customerId?: number
+  chargeRemainingBalance?: boolean
 }
 
 export interface ReturnItemInput {
@@ -134,6 +171,7 @@ export interface ReturnQuoteRequest {
 
 export interface ReturnRequest extends ReturnQuoteRequest {
   tenders: TenderInput[]
+  customerId?: number
 }
 
 export interface CheckoutQuoteItem {
@@ -169,6 +207,7 @@ export interface SaleTax {
 
 export interface SaleSummary {
   id: number
+  customer: SaleCustomerSummary | null
   transactionNumber: string
   transactionType: 'sale' | 'return'
   returnReason: string | null
@@ -181,6 +220,12 @@ export interface SaleSummary {
   payments: SalePayment[]
   createdAt: string
   itemCount: number
+}
+
+export interface SaleCustomerSummary {
+  id: number
+  name: string
+  companyName: string
 }
 
 export interface SalePayment {
@@ -419,6 +464,11 @@ export type ReceiptResult<T> = { ok: true; data: T } | { ok: false; error: Recei
 export interface PosApi {
   app: {
     getVersion(): Promise<string>
+  }
+  customers: {
+    list(query: string): Promise<CustomerResult<Customer[]>>
+    create(input: CustomerInput): Promise<CustomerResult<Customer>>
+    update(id: number, input: CustomerInput): Promise<CustomerResult<Customer>>
   }
   products: {
     list(options: ProductListOptions): Promise<ProductResult<Product[]>>

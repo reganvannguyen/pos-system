@@ -1,13 +1,8 @@
-import type {
-  ChargeCustomer,
-  ChargePaymentTenderType,
-  SavedTenderType,
-  TenderInput
-} from '../../shared/pos-api'
+import type { ChargePaymentTenderType, SavedTenderType, TenderInput } from '../../shared/pos-api'
 
 export interface CheckoutSession {
   tenders: TenderInput[]
-  chargeCustomer?: ChargeCustomer
+  chargeRemainingBalance?: boolean
 }
 
 export interface TenderSummary {

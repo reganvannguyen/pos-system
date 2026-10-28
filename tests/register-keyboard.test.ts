@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import {
   isTextEntryTarget,
   nextCartLineIndex,
+  nextDirectionalFocusIndex,
   nextPaymentMethodIndex,
   resolveRegisterShortcut,
   shouldPreserveNativeArrow,
@@ -20,6 +21,7 @@ const availableRegister = {
   dialogOpen: false,
   skuEnabled: true,
   productsEnabled: true,
+  customerPickerEnabled: true,
   clearEnabled: true,
   lineSelectionEnabled: true,
   priceEditEnabled: true,
@@ -31,6 +33,7 @@ test('register shortcuts resolve to their assigned actions', () => {
   assert.equal(resolveRegisterShortcut({ ...availableRegister, key: 'r' }), 'toggle-mode')
   assert.equal(resolveRegisterShortcut({ ...availableRegister, key: 'R' }), 'toggle-mode')
   assert.equal(resolveRegisterShortcut({ ...availableRegister, key: 'F3' }), 'navigate-products')
+  assert.equal(resolveRegisterShortcut({ ...availableRegister, key: 'F8' }), 'open-customer-picker')
   assert.equal(resolveRegisterShortcut({ ...availableRegister, key: 'F4' }), 'clear-cart')
   assert.equal(
     resolveRegisterShortcut({ ...availableRegister, key: 'F5' }),
@@ -64,6 +67,10 @@ test('shortcuts respect modifiers, repeats, and unavailable actions', () => {
     null
   )
   assert.equal(
+    resolveRegisterShortcut({ ...availableRegister, key: 'F8', customerPickerEnabled: false }),
+    null
+  )
+  assert.equal(
     resolveRegisterShortcut({ ...availableRegister, key: 'F4', clearEnabled: false }),
     null
   )
@@ -79,6 +86,39 @@ test('shortcuts respect modifiers, repeats, and unavailable actions', () => {
     resolveRegisterShortcut({ ...availableRegister, key: 'F9', paymentEnabled: false }),
     null
   )
+})
+
+test('left and right arrows stay on the focused control’s visual row', () => {
+  const rects = [
+    { left: 0, top: 0, width: 40, height: 32 },
+    { left: 100, top: 0, width: 40, height: 32 },
+    { left: 30, top: 38, width: 40, height: 32 },
+    { left: 60, top: 0, width: 40, height: 32 }
+  ]
+
+  assert.equal(nextDirectionalFocusIndex(0, rects, 'ArrowRight'), 3)
+  assert.equal(nextDirectionalFocusIndex(0, rects, 'ArrowLeft'), null)
+})
+
+test('up and down arrows choose the nearest row, then the closest horizontal alignment', () => {
+  const rects = [
+    { left: 80, top: 0, width: 40, height: 32 },
+    { left: 130, top: 54, width: 40, height: 32 },
+    { left: 70, top: 54, width: 40, height: 32 },
+    { left: 80, top: 104, width: 40, height: 32 }
+  ]
+
+  assert.equal(nextDirectionalFocusIndex(0, rects, 'ArrowDown'), 2)
+  assert.equal(nextDirectionalFocusIndex(3, rects, 'ArrowUp'), 2)
+})
+
+test('directional focus does not jump diagonally when no control is on the same row', () => {
+  const rects = [
+    { left: 0, top: 0, width: 40, height: 32 },
+    { left: 20, top: 38, width: 40, height: 32 }
+  ]
+
+  assert.equal(nextDirectionalFocusIndex(0, rects, 'ArrowRight'), null)
 })
 
 test('text-entry detection covers text inputs and editable descendants, not action buttons', () => {

@@ -48,6 +48,11 @@ const schema =
   readFileSync(
     join(process.cwd(), 'src/main/database/migrations/010_charge_payment_tenders.sql'),
     'utf8'
+  ) +
+  readFileSync(join(process.cwd(), 'src/main/database/migrations/011_customers.sql'), 'utf8') +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/012_transaction_customers.sql'),
+    'utf8'
   )
 
 interface SalesTestContext {
@@ -105,6 +110,34 @@ function localTimestamp(year: number, month: number, day: number, hour = 12, min
 
 function setSaleTimestamp(database: Database.Database, saleId: number, timestamp: string): void {
   database.prepare('UPDATE sales SET created_at = ? WHERE id = ?').run(timestamp, saleId)
+}
+
+function createCustomer(
+  database: Database.Database,
+  values: Partial<{
+    firstName: string
+    lastName: string
+    companyName: string
+    address: string
+    phoneNumber: string
+    email: string
+  }> = {}
+): number {
+  const result = database
+    .prepare(
+      `INSERT INTO customers
+         (first_name, last_name, company_name, address, phone_number, email)
+       VALUES (@firstName, @lastName, @companyName, @address, @phoneNumber, @email)`
+    )
+    .run({
+      firstName: values.firstName ?? '',
+      lastName: values.lastName ?? '',
+      companyName: values.companyName ?? '',
+      address: values.address ?? '',
+      phoneNumber: values.phoneNumber ?? '',
+      email: values.email ?? ''
+    })
+  return Number(result.lastInsertRowid)
 }
 
 function completeWithPayment(
@@ -265,6 +298,43 @@ test('allows a zero-total return with an item and reason but without payout', ()
         }
       ).stock_quantity,
       2
+    )
+  })
+})
+
+test('links a selected customer to both sales and returns', () => {
+  withSales(({ database, products, service }) => {
+    const productId = createProduct(products, {
+      sku: 'CUSTOMER-LINK',
+      name: 'Customer-linked item',
+      priceCents: 500
+    })
+    const customerId = createCustomer(database, {
+      firstName: 'Casey',
+      lastName: 'Shopper',
+      companyName: 'Example Studio'
+    })
+    const sale = service.completeCheckout({
+      items: [{ productId, quantity: 1 }],
+      tenders: [{ type: 'cash', amountCents: 500 }],
+      customerId
+    }).sale
+    const returned = service.completeReturn({
+      reason: 'Exchange',
+      items: [{ productId, quantity: 1, restock: false }],
+      tenders: [{ type: 'cash', amountCents: 500 }],
+      customerId
+    }).return
+
+    assert.deepEqual(sale.customer, {
+      id: customerId,
+      name: 'Casey Shopper',
+      companyName: 'Example Studio'
+    })
+    assert.deepEqual(returned.customer, sale.customer)
+    assert.deepEqual(
+      service.listRecent().map(({ customer }) => customer?.id ?? null),
+      [customerId, customerId]
     )
   })
 })
@@ -634,27 +704,35 @@ test('records split tender amounts and summarizes cash and card applied totals',
 })
 
 test('completes a fully charged sale and saves customer details', () => {
-  withSales(({ products, service }) => {
+  withSales(({ database, products, service }) => {
     const productId = createProduct(products, {
       sku: 'CHARGE-FULL',
       name: 'Charged item',
       priceCents: 1000
     })
+    const customerId = createCustomer(database, {
+      firstName: 'Alex',
+      lastName: 'Customer',
+      companyName: 'Example Co',
+      address: '12 Main Street',
+      phoneNumber: '604-555-0100',
+      email: 'alex@example.com'
+    })
     const checkout = service.completeCheckout({
       items: [{ productId, quantity: 1 }],
       tenders: [],
-      chargeCustomer: {
-        name: '  Alex Customer  ',
-        companyName: 'Example Co',
-        address: '12 Main Street',
-        phoneNumber: '604-555-0100',
-        email: 'alex@example.com'
-      }
+      customerId,
+      chargeRemainingBalance: true
     })
 
     assert.equal(checkout.sale.paymentMethod, 'charge')
     assert.equal(checkout.sale.chargeAmountCents, 1000)
     assert.equal(checkout.sale.chargeBalanceCents, 1000)
+    assert.deepEqual(checkout.sale.customer, {
+      id: customerId,
+      name: 'Alex Customer',
+      companyName: 'Example Co'
+    })
     assert.deepEqual(checkout.sale.charge, {
       customer: {
         name: 'Alex Customer',
@@ -673,22 +751,21 @@ test('completes a fully charged sale and saves customer details', () => {
 })
 
 test('charges the balance left after a partial cash payment', () => {
-  withSales(({ products, service }) => {
+  withSales(({ database, products, service }) => {
     const productId = createProduct(products, {
       sku: 'CHARGE-SPLIT',
       name: 'Split charge item',
       priceCents: 1000
     })
+    const customerId = createCustomer(database, {
+      firstName: 'Jordan',
+      lastName: 'Customer'
+    })
     const checkout = service.completeCheckout({
       items: [{ productId, quantity: 1 }],
       tenders: [{ type: 'cash', amountCents: 400 }],
-      chargeCustomer: {
-        name: 'Jordan Customer',
-        companyName: '',
-        address: '',
-        phoneNumber: '',
-        email: ''
-      }
+      customerId,
+      chargeRemainingBalance: true
     })
 
     assert.equal(checkout.sale.paymentMethod, 'split')
@@ -703,22 +780,21 @@ test('charges the balance left after a partial cash payment', () => {
 })
 
 test('records partial and final charge repayments by tender and rejects overpayment', () => {
-  withSales(({ products, service }) => {
+  withSales(({ database, products, service }) => {
     const productId = createProduct(products, {
       sku: 'CHARGE-REPAY',
       name: 'Repayment item',
       priceCents: 1000
     })
+    const customerId = createCustomer(database, {
+      firstName: 'Taylor',
+      lastName: 'Customer'
+    })
     const checkout = service.completeCheckout({
       items: [{ productId, quantity: 1 }],
       tenders: [],
-      chargeCustomer: {
-        name: 'Taylor Customer',
-        companyName: '',
-        address: '',
-        phoneNumber: '',
-        email: ''
-      }
+      customerId,
+      chargeRemainingBalance: true
     })
     const partial = service.recordChargePayment({
       saleId: checkout.sale.id,
@@ -771,16 +847,15 @@ test('counts charge repayments in reports on the date they are received', () => 
       name: 'Report item',
       priceCents: 1000
     })
+    const customerId = createCustomer(database, {
+      firstName: 'Morgan',
+      lastName: 'Customer'
+    })
     const checkout = service.completeCheckout({
       items: [{ productId, quantity: 1 }],
       tenders: [],
-      chargeCustomer: {
-        name: 'Morgan Customer',
-        companyName: '',
-        address: '',
-        phoneNumber: '',
-        email: ''
-      }
+      customerId,
+      chargeRemainingBalance: true
     })
     setSaleTimestamp(database, checkout.sale.id, '2020-01-01 12:00:00')
     service.recordChargePayment({
@@ -815,8 +890,8 @@ test('counts charge repayments in reports on the date they are received', () => 
   })
 })
 
-test('validates charge customer details and requires a real remaining balance', () => {
-  withSales(({ products, service }) => {
+test('requires a saved customer and a real remaining balance for Charge', () => {
+  withSales(({ database, products, service }) => {
     const productId = createProduct(products, {
       sku: 'CHARGE-VALIDATION',
       name: 'Validation item',
@@ -827,13 +902,7 @@ test('validates charge customer details and requires a real remaining balance', 
         service.completeCheckout({
           items: [{ productId, quantity: 1 }],
           tenders: [],
-          chargeCustomer: {
-            name: '   ',
-            companyName: '',
-            address: '',
-            phoneNumber: '',
-            email: ''
-          }
+          chargeRemainingBalance: true
         })
       ),
       'invalid-input'
@@ -852,13 +921,8 @@ test('validates charge customer details and requires a real remaining balance', 
         service.completeCheckout({
           items: [{ productId, quantity: 1 }],
           tenders: [{ type: 'cash', amountCents: 1000 }],
-          chargeCustomer: {
-            name: 'Alex Customer',
-            companyName: '',
-            address: '',
-            phoneNumber: '',
-            email: ''
-          }
+          customerId: createCustomer(database, { firstName: 'Alex', lastName: 'Customer' }),
+          chargeRemainingBalance: true
         })
       ),
       'invalid-input'
@@ -1538,6 +1602,7 @@ test('PDF item totals allocate tax and split tenders by product and date charge 
       { productId: firstProductId, quantity: 1 },
       { productId: secondProductId, quantity: 1 }
     ])
+    const customerId = createCustomer(database, { firstName: 'Morgan', lastName: 'Customer' })
     const checkout = service.completeCheckout({
       items: [
         { productId: firstProductId, quantity: 1 },
@@ -1548,13 +1613,8 @@ test('PDF item totals allocate tax and split tenders by product and date charge 
         { type: 'debit', amountCents: 500 },
         { type: 'credit', amountCents: 600 }
       ],
-      chargeCustomer: {
-        name: 'Morgan Customer',
-        companyName: '',
-        address: '',
-        phoneNumber: '',
-        email: ''
-      }
+      customerId,
+      chargeRemainingBalance: true
     })
     assert.equal(checkout.sale.chargeAmountCents, saleQuote.totalCents - 1500)
     setSaleTimestamp(database, checkout.sale.id, '2025-03-09 12:00:00')
@@ -1881,7 +1941,8 @@ test('CSV quotes fields containing commas, quotes, and line breaks', () => {
         { type: 'cash', amountTenderedCents: 100, amountAppliedCents: 100, changeCents: 0 }
       ],
       createdAt: 'invalid date, "detail"\ncontinued',
-      itemCount: 1
+      itemCount: 1,
+      customer: null
     }
   ])
 
@@ -2097,8 +2158,18 @@ test('migration backfills historical payment types and original item prices', ()
         'utf8'
       )
     )
+    database.exec(
+      readFileSync(join(process.cwd(), 'src/main/database/migrations/011_customers.sql'), 'utf8')
+    )
+    database.exec(
+      readFileSync(
+        join(process.cwd(), 'src/main/database/migrations/012_transaction_customers.sql'),
+        'utf8'
+      )
+    )
     const historicalSales = createSalesService(createSalesRepository(database))
     assert.equal(historicalSales.getById(zeroSale).paymentMethod, 'cash')
+    assert.equal(historicalSales.getById(zeroSale).customer, null)
     const migratedSales = createSalesService(createSalesRepository(database))
     assert.equal(migratedSales.getById(cardSale).payments[0]?.type, 'card')
     assert.deepEqual(
@@ -2111,6 +2182,11 @@ test('migration backfills historical payment types and original item prices', ()
         .charge?.payments.map(({ type, amountCents }) => [type, amountCents]),
       [['cash', 100]]
     )
+    assert.equal(
+      migratedSales.getById(existingChargeSaleId).charge?.customer.name,
+      'Legacy Customer'
+    )
+    assert.equal(migratedSales.getById(existingChargeSaleId).customer, null)
     migratedSales.recordChargePayment({
       saleId: existingChargeSaleId,
       type: 'etransfer',

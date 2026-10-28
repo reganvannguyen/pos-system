@@ -8,6 +8,8 @@ import standaloneReturns from './migrations/007_standalone_returns.sql?raw'
 import transactionNumbers from './migrations/008_transaction_numbers.sql?raw'
 import saleCharges from './migrations/009_sale_charges.sql?raw'
 import chargePaymentTenders from './migrations/010_charge_payment_tenders.sql?raw'
+import customers from './migrations/011_customers.sql?raw'
+import transactionCustomers from './migrations/012_transaction_customers.sql?raw'
 import { backfillTransactionNumbers } from './transaction-numbers'
 import type { PosDatabase } from './types'
 
@@ -27,7 +29,9 @@ const migrations: Migration[] = [
   { version: 7, sql: standaloneReturns },
   { version: 8, sql: transactionNumbers, afterSql: backfillTransactionNumbers },
   { version: 9, sql: saleCharges },
-  { version: 10, sql: chargePaymentTenders }
+  { version: 10, sql: chargePaymentTenders },
+  { version: 11, sql: customers },
+  { version: 12, sql: transactionCustomers }
 ]
 
 export function runMigrations(database: PosDatabase): void {

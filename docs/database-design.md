@@ -2,11 +2,30 @@
 
 ## 1. Overview
 
-The MVP uses a single local SQLite database. The database stores products, completed sales, sale line items, and application settings.
+The MVP uses a single local SQLite database. The database stores customers, products, completed sales, sale line items, and application settings.
 
 The database file must be created in Electron's writable application data directory and must not be committed to Git.
 
 ## 2. Tables
+
+### customers
+
+Stores customer contact details and an optional image. Image data is stored in the database so it remains part of the same local data file.
+
+| Column | Type | Constraints | Purpose |
+|---|---|---|---|
+| id | INTEGER | PRIMARY KEY | Internal customer identifier |
+| first_name | TEXT | NOT NULL, default empty | Customer first name |
+| last_name | TEXT | NOT NULL, default empty | Customer last name |
+| company_name | TEXT | NOT NULL, default empty | Customer company |
+| address | TEXT | NOT NULL, default empty | Customer address |
+| phone_number | TEXT | NOT NULL, default empty | Customer telephone number |
+| email | TEXT | NOT NULL, default empty | Customer email address |
+| image_data_url | TEXT | nullable | Optional PNG, JPEG, or WebP image |
+| created_at | TEXT | NOT NULL | Creation timestamp |
+| updated_at | TEXT | NOT NULL | Last update timestamp |
+
+At least one of first name, last name, or company name is required. Other contact details are optional.
 
 ### products
 
@@ -39,6 +58,7 @@ Stores one row per completed transaction.
 |---|---|---|---|
 | id | INTEGER | PRIMARY KEY | Internal database identifier |
 | transaction_type | TEXT | NOT NULL | `sale` or `return`; old rows default to `sale` |
+| customer_id | INTEGER | nullable, FK | Customer selected for this transaction |
 | transaction_number | TEXT | UNIQUE | Customer-facing number in `YYYYMMDD-0001` format |
 | return_reason | TEXT | nullable | Required for a return; internal history/CSV field |
 | subtotal_cents | INTEGER | NOT NULL | Pre-tax amount magnitude |
@@ -150,9 +170,13 @@ sale_items >-------- sales
      many              one
 sale_payments >----- sales
       many              one
+customers ---------- sales
+   one                many
 ```
 
 A sale has one or more sale items.
+
+A customer may be associated with multiple sales and returns. The association is optional. Transaction history shows the linked customer’s current name, while charge records retain their original customer-detail snapshot.
 
 A return is stored as a transaction with one or more positive-quantity items, a required internal reason, exact payout rows, and per-line restock details. The application does not validate a prior purchase.
 
@@ -162,6 +186,19 @@ A sale item may retain a reference to a product, but historical display must use
 
 ```mermaid
 erDiagram
+    CUSTOMERS {
+        INTEGER id PK
+        TEXT first_name
+        TEXT last_name
+        TEXT company_name
+        TEXT address
+        TEXT phone_number
+        TEXT email
+        TEXT image_data_url
+        TEXT created_at
+        TEXT updated_at
+    }
+
     PRODUCTS {
         INTEGER id PK
         TEXT sku
@@ -175,6 +212,7 @@ erDiagram
 
     SALES {
         INTEGER id PK
+        INTEGER customer_id FK
         INTEGER subtotal_cents
         INTEGER tax_cents
         INTEGER total_cents
@@ -243,11 +281,25 @@ erDiagram
     SALES ||--o{ SALE_PAYMENTS : paid_by
     PRODUCTS ||--o{ SALE_ITEMS : referenced_by
     SALES ||--o{ SALE_TAXES : snapshots
+CUSTOMERS ||--o{ SALES : associated_with
 ```
 
 ## 5. Suggested Schema
 
 ```sql
+CREATE TABLE customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    first_name TEXT NOT NULL DEFAULT '',
+    last_name TEXT NOT NULL DEFAULT '',
+    company_name TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    phone_number TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    image_data_url TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sku TEXT NOT NULL,
@@ -261,13 +313,15 @@ CREATE TABLE products (
 
 CREATE TABLE sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id INTEGER,
     subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0),
     tax_cents INTEGER NOT NULL CHECK (tax_cents >= 0),
     total_cents INTEGER NOT NULL CHECK (total_cents >= 0),
     payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'card')),
     transaction_type TEXT NOT NULL DEFAULT 'sale' CHECK (transaction_type IN ('sale', 'return')),
     return_reason TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL
 );
 
 CREATE TABLE sale_items (
@@ -389,6 +443,8 @@ current initial schema is `src/main/database/migrations/001_initial_schema.sql`;
 migration for later schema changes rather than editing a migration that has shipped.
 
 Migration 007 adds `transaction_type` and `return_reason` to sales and the return restock fields to line items. Existing rows default to `sale`, with no return reason or restock quantity.
+
+Migration 011 adds customer records. Migration 012 adds an optional customer reference to sales and returns. Existing transactions stay unlinked, and their charge snapshots remain unchanged.
 
 At runtime, the main process opens `pos-system.sqlite` in Electron's `userData` directory and enables
 foreign key checks and write-ahead logging for that connection.
