@@ -1,7 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { IPC_CHANNELS } from '../shared/pos-api'
+import { IPC_CHANNELS, type BackupApiError, type BackupResult } from '../shared/pos-api'
+import { createBackupScheduler } from './backup-scheduler'
+import { BackupServiceError, createBackupService } from './backup-service'
 import { openDatabase } from './database/connection'
 import { createRepositories } from './database/repositories'
 import type { PosDatabase } from './database/types'
@@ -21,6 +23,8 @@ import { createSalesExportService } from './sales-export-service'
 import { createSalesService, toSalesResult, toSalesResultAsync } from './sales-service'
 
 let database: PosDatabase | undefined
+let backupService: ReturnType<typeof createBackupService> | undefined
+let backupScheduler: ReturnType<typeof createBackupScheduler> | undefined
 let repositories: ReturnType<typeof createRepositories> | undefined
 let productService: ReturnType<typeof createProductService> | undefined
 let customerService: ReturnType<typeof createCustomerService> | undefined
@@ -207,6 +211,109 @@ function registerBusinessSettingsHandlers(): void {
   )
 }
 
+async function toBackupResult<T>(operation: () => Promise<T> | T): Promise<BackupResult<T>> {
+  try {
+    return { ok: true, data: await operation() }
+  } catch (error) {
+    const apiError: BackupApiError =
+      error instanceof BackupServiceError
+        ? { code: error.code, message: error.message }
+        : { code: 'internal', message: 'The backup operation could not be completed.' }
+    if (!(error instanceof BackupServiceError)) console.error('Backup operation failed.', error)
+    return { ok: false, error: apiError }
+  }
+}
+
+function registerBackupHandlers(): void {
+  ipcMain.handle(IPC_CHANNELS.backupsGetStatus, () =>
+    toBackupResult(() => requireBackupService().getStatus())
+  )
+  ipcMain.handle(IPC_CHANNELS.backupsChooseDestination, async () =>
+    toBackupResult(async () => {
+      const options = {
+        title: 'Choose a backup folder on another drive',
+        buttonLabel: 'Use this folder',
+        properties: ['openDirectory', 'createDirectory'] as Array<
+          'openDirectory' | 'createDirectory'
+        >
+      }
+      const result = mainWindow
+        ? await dialog.showOpenDialog(mainWindow, options)
+        : await dialog.showOpenDialog(options)
+      if (result.canceled || !result.filePaths[0]) return requireBackupService().getStatus()
+      const status = await requireBackupService().setDestination(result.filePaths[0])
+      backupScheduler?.destinationChanged()
+      return status
+    })
+  )
+  ipcMain.handle(IPC_CHANNELS.backupsRunManual, () =>
+    toBackupResult(() => requireBackupService().runManual())
+  )
+  ipcMain.handle(IPC_CHANNELS.backupsRestore, async () => {
+    const fileOptions = {
+      title: 'Select a POS backup to restore',
+      buttonLabel: 'Select backup',
+      properties: ['openFile'] as Array<'openFile'>,
+      filters: [{ name: 'POS database backups', extensions: ['sqlite'] }]
+    }
+    const fileResult = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, fileOptions)
+      : await dialog.showOpenDialog(fileOptions)
+    if (fileResult.canceled || !fileResult.filePaths[0]) {
+      return { ok: true, data: { restored: false } } satisfies BackupResult<{ restored: boolean }>
+    }
+
+    const confirmationOptions = {
+      type: 'warning' as const,
+      title: 'Replace POS data?',
+      message: 'Restoring this backup replaces all current POS data.',
+      detail:
+        'A safety copy of the current database will be saved before restoring. The app will restart after the restore.',
+      buttons: ['Cancel', 'Restore backup'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    }
+    const confirmation = mainWindow
+      ? await dialog.showMessageBox(mainWindow, confirmationOptions)
+      : await dialog.showMessageBox(confirmationOptions)
+    if (confirmation.response !== 1) {
+      return { ok: true, data: { restored: false } } satisfies BackupResult<{ restored: boolean }>
+    }
+
+    const result = await toBackupResult(async () => {
+      await requireBackupService().restore(fileResult.filePaths[0])
+      return { restored: true }
+    })
+    if (result.ok) {
+      backupScheduler?.stop()
+      setTimeout(() => {
+        app.relaunch()
+        app.exit(0)
+      }, 500)
+    } else if (errorClosedDatabase(result.error)) {
+      backupScheduler?.stop()
+      const messageOptions = {
+        type: 'error' as const,
+        title: 'Restore failed',
+        message: result.error.message,
+        detail: 'The previous database was restored. The app will now reopen.',
+        buttons: ['Restart'],
+        noLink: true
+      }
+      if (mainWindow) await dialog.showMessageBox(mainWindow, messageOptions)
+      else dialog.showErrorBox(messageOptions.title, messageOptions.message)
+      app.relaunch()
+      app.exit(0)
+    }
+    return result
+  })
+}
+
+function errorClosedDatabase(error: BackupApiError): boolean {
+  return error.code === 'restore-failed' && Boolean(database && !database.open)
+}
+
 function requireProductService(): NonNullable<typeof productService> {
   if (!productService) throw new Error('The product service is not ready.')
   return productService
@@ -232,6 +339,11 @@ function requireReceiptService(): NonNullable<typeof receiptService> {
   return receiptService
 }
 
+function requireBackupService(): NonNullable<typeof backupService> {
+  if (!backupService) throw new Error('The backup service is not ready.')
+  return backupService
+}
+
 function requireBusinessSettingsService(): NonNullable<typeof businessSettingsService> {
   if (!businessSettingsService) throw new Error('The business settings service is not ready.')
   return businessSettingsService
@@ -244,7 +356,16 @@ function requireTaxSettingsService(): NonNullable<typeof taxSettingsService> {
 
 app.whenReady().then(() => {
   try {
-    database = openDatabase(join(app.getPath('userData'), 'pos-system.sqlite'))
+    const userDataPath = app.getPath('userData')
+    const databasePath = join(userDataPath, 'pos-system.sqlite')
+    database = openDatabase(databasePath)
+    backupService = createBackupService({
+      database,
+      databasePath,
+      userDataPath,
+      openStagedDatabase: openDatabase,
+      supportedSchemaVersion: database.pragma('user_version', { simple: true }) as number
+    })
     repositories = createRepositories(database)
     repositories.settings.get()
     customerService = createCustomerService(repositories.customers)
@@ -278,6 +399,9 @@ app.whenReady().then(() => {
     salesService = undefined
     salesExportService = undefined
     receiptService = undefined
+    backupService = undefined
+    backupScheduler?.stop()
+    backupScheduler = undefined
     database?.close()
     const message = error instanceof Error ? error.message : String(error)
     dialog.showErrorBox('Unable to open the local database', message)
@@ -293,7 +417,10 @@ app.whenReady().then(() => {
   registerBusinessSettingsHandlers()
   registerSalesHandlers()
   registerReceiptHandlers()
+  registerBackupHandlers()
   createWindow()
+  backupScheduler = createBackupScheduler(requireBackupService())
+  backupScheduler.start()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -305,5 +432,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  backupScheduler?.stop()
   if (database?.open) database.close()
 })

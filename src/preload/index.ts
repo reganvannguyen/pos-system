@@ -44,6 +44,12 @@ const posApi: PosApi = {
     getTaxes: () => ipcRenderer.invoke(IPC_CHANNELS.settingsGetTaxes),
     saveTaxes: (settings) => ipcRenderer.invoke(IPC_CHANNELS.settingsSaveTaxes, settings)
   },
+  backups: {
+    getStatus: () => ipcRenderer.invoke(IPC_CHANNELS.backupsGetStatus),
+    chooseDestination: () => ipcRenderer.invoke(IPC_CHANNELS.backupsChooseDestination),
+    runManual: () => ipcRenderer.invoke(IPC_CHANNELS.backupsRunManual),
+    restore: () => ipcRenderer.invoke(IPC_CHANNELS.backupsRestore)
+  },
   receipts: {
     printTest: () => ipcRenderer.invoke(IPC_CHANNELS.receiptsPrintTest),
     print: (saleId) => ipcRenderer.invoke(IPC_CHANNELS.receiptsPrint, saleId),

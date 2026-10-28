@@ -27,6 +27,10 @@ export const IPC_CHANNELS = {
   settingsSaveBusiness: 'settings:save-business',
   settingsGetTaxes: 'settings:get-taxes',
   settingsSaveTaxes: 'settings:save-taxes',
+  backupsGetStatus: 'backups:get-status',
+  backupsChooseDestination: 'backups:choose-destination',
+  backupsRunManual: 'backups:run-manual',
+  backupsRestore: 'backups:restore',
   receiptsPrint: 'receipts:print',
   receiptsPrintTest: 'receipts:print-test',
   receiptsEmailDraft: 'receipts:email-draft',
@@ -417,6 +421,31 @@ export interface TaxSettingsApiError {
 
 export type TaxSettingsResult<T> = { ok: true; data: T } | { ok: false; error: TaxSettingsApiError }
 
+export type BackupKind = 'automatic' | 'manual'
+
+export interface BackupStatus {
+  destinationPath: string | null
+  lastBackupAt: string | null
+  lastBackupKind: BackupKind | null
+  lastAttemptAt: string | null
+  lastAttemptStatus: 'success' | 'failed' | null
+  lastAttemptError: string | null
+}
+
+export interface BackupApiError {
+  code:
+    | 'not-configured'
+    | 'same-drive'
+    | 'unavailable'
+    | 'invalid-backup'
+    | 'unsupported-version'
+    | 'restore-failed'
+    | 'internal'
+  message: string
+}
+
+export type BackupResult<T> = { ok: true; data: T } | { ok: false; error: BackupApiError }
+
 export interface ReceiptTestPrintResult {
   sentToPrinter: true
 }
@@ -505,6 +534,12 @@ export interface PosApi {
     saveBusiness(settings: BusinessSettingsInput): Promise<BusinessSettingsResult<BusinessSettings>>
     getTaxes(): Promise<TaxSettingsResult<TaxRate[]>>
     saveTaxes(settings: TaxSettingsInput): Promise<TaxSettingsResult<TaxRate[]>>
+  }
+  backups: {
+    getStatus(): Promise<BackupResult<BackupStatus>>
+    chooseDestination(): Promise<BackupResult<BackupStatus>>
+    runManual(): Promise<BackupResult<BackupStatus>>
+    restore(): Promise<BackupResult<{ restored: boolean }>>
   }
   receipts: {
     printTest(): Promise<ReceiptResult<ReceiptTestPrintResult>>

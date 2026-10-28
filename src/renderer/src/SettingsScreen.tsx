@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   BusinessSettingsInput,
   BusinessSettingsField,
+  BackupStatus,
   PrinterOption,
   TaxRate,
   TaxRateInput,
@@ -52,6 +53,12 @@ function SettingsScreen(): React.JSX.Element {
   const [testPrinting, setTestPrinting] = useState(false)
   const [receiptError, setReceiptError] = useState('')
   const [receiptNotice, setReceiptNotice] = useState('')
+
+  const [backupStatus, setBackupStatus] = useState<BackupStatus | null>(null)
+  const [backupLoading, setBackupLoading] = useState(true)
+  const [backupBusy, setBackupBusy] = useState(false)
+  const [backupError, setBackupError] = useState('')
+  const [backupNotice, setBackupNotice] = useState('')
 
   const loadBusinessSettings = useCallback(async (): Promise<void> => {
     setBusinessLoading(true)
@@ -116,6 +123,32 @@ function SettingsScreen(): React.JSX.Element {
     }
   }, [])
 
+  const loadBackupStatus = useCallback(async (): Promise<void> => {
+    setBackupLoading(true)
+    setBackupError('')
+    try {
+      const result = await window.pos.backups.getStatus()
+      if (!result.ok) {
+        setBackupError(result.error.message)
+        return
+      }
+      setBackupStatus(result.data)
+    } catch {
+      setBackupError('Backup settings could not be loaded. Try again.')
+    } finally {
+      setBackupLoading(false)
+    }
+  }, [])
+
+  const refreshBackupStatus = useCallback(async (): Promise<void> => {
+    try {
+      const result = await window.pos.backups.getStatus()
+      if (result.ok) setBackupStatus(result.data)
+    } catch {
+      // Keep the last known backup status visible if a refresh fails.
+    }
+  }, [])
+
   async function refreshPrinters(): Promise<void> {
     setPrinterLoading(true)
     setReceiptError('')
@@ -138,7 +171,13 @@ function SettingsScreen(): React.JSX.Element {
     void Promise.resolve().then(loadBusinessSettings)
     void Promise.resolve().then(loadTaxSettings)
     void Promise.resolve().then(loadReceiptSettings)
-  }, [loadBusinessSettings, loadReceiptSettings, loadTaxSettings])
+    void Promise.resolve().then(loadBackupStatus)
+  }, [loadBackupStatus, loadBusinessSettings, loadReceiptSettings, loadTaxSettings])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => void refreshBackupStatus(), 60_000)
+    return () => window.clearInterval(interval)
+  }, [refreshBackupStatus])
 
   async function saveBusinessSettings(): Promise<void> {
     setBusinessSaving(true)
@@ -242,6 +281,66 @@ function SettingsScreen(): React.JSX.Element {
       setReceiptError('Receipt settings could not be saved. Try again.')
     } finally {
       setReceiptSaving(false)
+    }
+  }
+
+  async function chooseBackupDestination(): Promise<void> {
+    setBackupBusy(true)
+    setBackupError('')
+    setBackupNotice('')
+    try {
+      const previousPath = backupStatus?.destinationPath
+      const result = await window.pos.backups.chooseDestination()
+      if (!result.ok) {
+        setBackupError(result.error.message)
+        return
+      }
+      setBackupStatus(result.data)
+      if (previousPath !== result.data.destinationPath) {
+        setBackupNotice('Backup folder saved. Automatic backups are enabled.')
+      }
+    } catch {
+      setBackupError('The backup folder could not be saved. Try again.')
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
+  async function runManualBackup(): Promise<void> {
+    setBackupBusy(true)
+    setBackupError('')
+    setBackupNotice('')
+    try {
+      const result = await window.pos.backups.runManual()
+      if (!result.ok) {
+        await refreshBackupStatus()
+        setBackupError(result.error.message)
+        return
+      }
+      setBackupStatus(result.data)
+      setBackupNotice('Backup created successfully.')
+    } catch {
+      setBackupError('The backup could not be created. Check the backup drive and try again.')
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
+  async function restoreBackup(): Promise<void> {
+    setBackupBusy(true)
+    setBackupError('')
+    setBackupNotice('')
+    try {
+      const result = await window.pos.backups.restore()
+      if (!result.ok) {
+        setBackupError(result.error.message)
+      } else if (result.data.restored) {
+        setBackupNotice('Backup restored. The app is restarting.')
+      }
+    } catch {
+      setBackupError('The backup could not be restored. Try again.')
+    } finally {
+      setBackupBusy(false)
     }
   }
 
@@ -677,6 +776,91 @@ function SettingsScreen(): React.JSX.Element {
               </button>
             </div>
           </form>
+        )}
+      </section>
+
+      <section
+        className="settings-card backup-settings-card"
+        aria-labelledby="backup-settings-title"
+      >
+        <div className="settings-card-heading">
+          <div>
+            <p className="eyebrow">Data protection</p>
+            <h2 id="backup-settings-title">Backup and Restore</h2>
+            <p className="settings-copy">
+              Save the full register to another drive each night at 2:00 AM. If the app misses that
+              time while closed, it backs up the next time it starts. Automatic backups are kept for
+              90 days; manual backups are kept until you remove them.
+            </p>
+          </div>
+        </div>
+
+        {backupLoading ? (
+          <p className="settings-state" role="status">
+            Loading backup settings…
+          </p>
+        ) : (
+          <div className="backup-settings-content">
+            <div className="backup-destination">
+              <strong>Backup folder</strong>
+              <span>{backupStatus?.destinationPath ?? 'Not selected'}</span>
+            </div>
+            {!backupStatus?.destinationPath && (
+              <p className="settings-help">
+                Choose a folder on a separate drive to enable backups.
+              </p>
+            )}
+            {backupStatus?.lastAttemptStatus === 'failed' && (
+              <p className="product-banner-error" role="alert">
+                Last backup attempt failed: {backupStatus.lastAttemptError}
+              </p>
+            )}
+            {backupStatus?.lastBackupAt && (
+              <p className="backup-last-success" role="status">
+                Last successful backup: {new Date(backupStatus.lastBackupAt).toLocaleString()} (
+                {backupStatus.lastBackupKind})
+              </p>
+            )}
+            {!backupStatus?.lastBackupAt && backupStatus?.lastAttemptStatus !== 'failed' && (
+              <p className="settings-help">No backup has been created yet.</p>
+            )}
+            {backupError && backupError !== backupStatus?.lastAttemptError && (
+              <p className="product-banner-error" role="alert">
+                {backupError}
+              </p>
+            )}
+            {backupNotice && (
+              <p className="settings-notice" role="status">
+                {backupNotice}
+              </p>
+            )}
+            <div className="settings-actions backup-settings-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={backupBusy}
+                onClick={() => void restoreBackup()}
+              >
+                Restore from backup
+              </button>
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={backupBusy}
+                onClick={() => void chooseBackupDestination()}
+              >
+                {backupStatus?.destinationPath ? 'Change backup folder' : 'Choose backup folder'}
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                disabled={backupBusy || !backupStatus?.destinationPath}
+                onClick={() => void runManualBackup()}
+              >
+                {backupBusy ? 'Working…' : 'Back up now'}
+              </button>
+            </div>
+          </div>
         )}
       </section>
     </section>
