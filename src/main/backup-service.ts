@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { access, copyFile, mkdir, rename, rm, stat } from 'node:fs/promises'
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, win32 } from 'node:path'
 import Database from 'better-sqlite3'
 import type { BackupKind, BackupStatus } from '../shared/pos-api'
@@ -60,6 +60,7 @@ export interface BackupServiceOptions {
 
 export function createBackupService(options: BackupServiceOptions) {
   const { database, databasePath, userDataPath, supportedSchemaVersion } = options
+  const sameVolume = options.sameVolume ?? isSameVolumeForCurrentPlatform
   const configPath = join(userDataPath, 'backup-settings.json')
   const config = readConfig(configPath)
   let backupInProgress = false
@@ -67,6 +68,9 @@ export function createBackupService(options: BackupServiceOptions) {
   function getStatus(): BackupStatus {
     return {
       destinationPath: config.destinationPath,
+      destinationOnSameDrive: config.destinationPath
+        ? sameVolume(databasePath, config.destinationPath)
+        : false,
       lastBackupAt: config.lastBackupAt,
       lastBackupKind: config.lastBackupKind,
       lastAttemptAt: config.lastAttemptAt,
@@ -79,11 +83,14 @@ export function createBackupService(options: BackupServiceOptions) {
     return config.lastAutomaticDate
   }
 
-  async function setDestination(destinationPath: string): Promise<BackupStatus> {
+  async function setDestination(
+    destinationPath: string,
+    allowSameDrive = false
+  ): Promise<BackupStatus> {
     if (!destinationPath.trim()) {
       throw new BackupServiceError('unavailable', 'Choose a backup folder.')
     }
-    assertDifferentVolume(databasePath, destinationPath, options.sameVolume)
+    if (!allowSameDrive) assertDifferentVolume(databasePath, destinationPath, sameVolume)
     try {
       const info = await stat(destinationPath)
       if (!info.isDirectory()) throw new Error('The selected path is not a folder.')
@@ -124,7 +131,6 @@ export function createBackupService(options: BackupServiceOptions) {
           'Choose a backup folder in Settings before creating a backup.'
         )
       }
-      assertDifferentVolume(databasePath, destination, options.sameVolume)
       const destinationInfo = await stat(destination)
       if (!destinationInfo.isDirectory()) throw new Error('The backup destination is not a folder.')
 
@@ -274,6 +280,15 @@ export function isSameWindowsVolume(firstPath: string, secondPath: string): bool
   const firstRoot = win32.parse(win32.resolve(firstPath)).root.toLowerCase()
   const secondRoot = win32.parse(win32.resolve(secondPath)).root.toLowerCase()
   return firstRoot === secondRoot
+}
+
+function isSameVolumeForCurrentPlatform(firstPath: string, secondPath: string): boolean {
+  if (process.platform === 'win32') return isSameWindowsVolume(firstPath, secondPath)
+  try {
+    return statSync(firstPath).dev === statSync(secondPath).dev
+  } catch {
+    return false
+  }
 }
 
 function isSameWindowsPath(firstPath: string, secondPath: string): boolean {

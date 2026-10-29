@@ -441,6 +441,7 @@ export type BackupKind = 'automatic' | 'manual'
 
 export interface BackupStatus {
   destinationPath: string | null
+  destinationOnSameDrive: boolean
   lastBackupAt: string | null
   lastBackupKind: BackupKind | null
   lastAttemptAt: string | null

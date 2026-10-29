@@ -1,7 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { IPC_CHANNELS, type BackupApiError, type BackupResult } from '../shared/pos-api'
+import {
+  IPC_CHANNELS,
+  type BackupApiError,
+  type BackupResult,
+  type BackupStatus
+} from '../shared/pos-api'
 import { createBackupScheduler } from './backup-scheduler'
 import { BackupServiceError, createBackupService } from './backup-service'
 import { openDatabase } from './database/connection'
@@ -25,7 +30,6 @@ import { createSalesService, toSalesResult, toSalesResultAsync } from './sales-s
 let database: PosDatabase | undefined
 let backupService: ReturnType<typeof createBackupService> | undefined
 let backupScheduler: ReturnType<typeof createBackupScheduler> | undefined
-let repositories: ReturnType<typeof createRepositories> | undefined
 let productService: ReturnType<typeof createProductService> | undefined
 let customerService: ReturnType<typeof createCustomerService> | undefined
 let businessSettingsService: ReturnType<typeof createBusinessSettingsService> | undefined
@@ -244,7 +248,29 @@ function registerBackupHandlers(): void {
         ? await dialog.showOpenDialog(mainWindow, options)
         : await dialog.showOpenDialog(options)
       if (result.canceled || !result.filePaths[0]) return requireBackupService().getStatus()
-      const status = await requireBackupService().setDestination(result.filePaths[0])
+      const service = requireBackupService()
+      let status: BackupStatus
+      try {
+        status = await service.setDestination(result.filePaths[0])
+      } catch (error) {
+        if (!(error instanceof BackupServiceError) || error.code !== 'same-drive') throw error
+        const warningOptions = {
+          type: 'warning' as const,
+          title: 'Backup folder is on the same drive',
+          message: 'This folder is on the same drive as the POS database.',
+          detail:
+            'Backups here can help recover from application or database problems, but they will not protect against drive failure. Choose another drive for that protection.',
+          buttons: ['Cancel', 'Use this folder anyway'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true
+        }
+        const confirmation = mainWindow
+          ? await dialog.showMessageBox(mainWindow, warningOptions)
+          : await dialog.showMessageBox(warningOptions)
+        if (confirmation.response !== 1) return service.getStatus()
+        status = await service.setDestination(result.filePaths[0], true)
+      }
       backupScheduler?.destinationChanged()
       return status
     })
@@ -271,7 +297,7 @@ function registerBackupHandlers(): void {
       title: 'Replace POS data?',
       message: 'Restoring this backup replaces all current POS data.',
       detail:
-        'A safety copy of the current database will be saved before restoring. The app will restart after the restore.',
+        'A safety copy of the current database will be saved before restoring. The app will refresh after the restore.',
       buttons: ['Cancel', 'Restore backup'],
       defaultId: 0,
       cancelId: 0,
@@ -289,13 +315,8 @@ function registerBackupHandlers(): void {
       return { restored: true }
     })
     if (result.ok) {
-      backupScheduler?.stop()
-      setTimeout(() => {
-        app.relaunch()
-        app.exit(0)
-      }, 500)
+      restartAfterDatabaseRestore()
     } else if (errorClosedDatabase(result.error)) {
-      backupScheduler?.stop()
       const messageOptions = {
         type: 'error' as const,
         title: 'Restore failed',
@@ -306,8 +327,7 @@ function registerBackupHandlers(): void {
       }
       if (mainWindow) await dialog.showMessageBox(mainWindow, messageOptions)
       else dialog.showErrorBox(messageOptions.title, messageOptions.message)
-      app.relaunch()
-      app.exit(0)
+      restartAfterDatabaseRestore()
     }
     return result
   })
@@ -315,6 +335,33 @@ function registerBackupHandlers(): void {
 
 function errorClosedDatabase(error: BackupApiError): boolean {
   return error.code === 'restore-failed' && Boolean(database && !database.open)
+}
+
+function restartAfterDatabaseRestore(): void {
+  backupScheduler?.stop()
+  backupScheduler = undefined
+
+  if (app.isPackaged) {
+    setTimeout(() => {
+      app.relaunch()
+      app.exit(0)
+    }, 500)
+    return
+  }
+
+  try {
+    initializeDatabaseServices()
+    backupScheduler = createBackupScheduler(requireBackupService())
+    backupScheduler.start()
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload()
+    }, 500)
+  } catch (error) {
+    clearDatabaseServices()
+    const message = error instanceof Error ? error.message : String(error)
+    dialog.showErrorBox('Unable to reopen the restored database', message)
+    app.quit()
+  }
 }
 
 function requireProductService(): NonNullable<typeof productService> {
@@ -357,56 +404,67 @@ function requireTaxSettingsService(): NonNullable<typeof taxSettingsService> {
   return taxSettingsService
 }
 
+function initializeDatabaseServices(): void {
+  const userDataPath = app.getPath('userData')
+  const databasePath = join(userDataPath, 'pos-system.sqlite')
+  const activeDatabase = openDatabase(databasePath)
+  database = activeDatabase
+  backupService = createBackupService({
+    database: activeDatabase,
+    databasePath,
+    userDataPath,
+    openStagedDatabase: openDatabase,
+    supportedSchemaVersion: activeDatabase.pragma('user_version', { simple: true }) as number
+  })
+  const activeRepositories = createRepositories(activeDatabase)
+  activeRepositories.settings.get()
+  customerService = createCustomerService(activeRepositories.customers)
+  productService = createProductService(activeRepositories.products)
+  businessSettingsService = createBusinessSettingsService(activeRepositories.settings)
+  taxSettingsService = createTaxSettingsService(activeRepositories.taxes)
+  const activeSalesService = createSalesService(activeRepositories.sales)
+  salesService = activeSalesService
+  salesExportService = createSalesExportService(
+    activeSalesService,
+    saveSalesCsvFile,
+    saveSalesPdfFile,
+    () => requireBusinessSettingsService().get()
+  )
+  receiptService = createReceiptService({
+    sales: activeRepositories.sales,
+    settings: activeRepositories.settings,
+    listSystemPrinters: async () => (await mainWindow?.webContents.getPrintersAsync()) ?? [],
+    printHtml: printReceiptHtml,
+    createPdf: createReceiptPdf,
+    deletePdf: (path) => unlink(path),
+    openEmailDraft: openWindowsEmailDraft,
+    openExternal: (url) => shell.openExternal(url),
+    openPath: (path) => shell.openPath(path),
+    showItemInFolder: (path) => shell.showItemInFolder(path)
+  })
+}
+
+function clearDatabaseServices(): void {
+  backupScheduler?.stop()
+  backupScheduler = undefined
+  productService = undefined
+  customerService = undefined
+  businessSettingsService = undefined
+  taxSettingsService = undefined
+  salesService = undefined
+  salesExportService = undefined
+  receiptService = undefined
+  backupService = undefined
+  const activeDatabase = database
+  database = undefined
+  if (activeDatabase?.open) activeDatabase.close()
+}
+
 app.whenReady().then(() => {
   try {
-    const userDataPath = app.getPath('userData')
-    const databasePath = join(userDataPath, 'pos-system.sqlite')
-    database = openDatabase(databasePath)
-    backupService = createBackupService({
-      database,
-      databasePath,
-      userDataPath,
-      openStagedDatabase: openDatabase,
-      supportedSchemaVersion: database.pragma('user_version', { simple: true }) as number
-    })
-    repositories = createRepositories(database)
-    repositories.settings.get()
-    customerService = createCustomerService(repositories.customers)
-    productService = createProductService(repositories.products)
-    businessSettingsService = createBusinessSettingsService(repositories.settings)
-    taxSettingsService = createTaxSettingsService(repositories.taxes)
-    salesService = createSalesService(repositories.sales)
-    salesExportService = createSalesExportService(
-      salesService,
-      saveSalesCsvFile,
-      saveSalesPdfFile,
-      () => requireBusinessSettingsService().get()
-    )
-    receiptService = createReceiptService({
-      sales: repositories.sales,
-      settings: repositories.settings,
-      listSystemPrinters: async () => (await mainWindow?.webContents.getPrintersAsync()) ?? [],
-      printHtml: printReceiptHtml,
-      createPdf: createReceiptPdf,
-      deletePdf: (path) => unlink(path),
-      openEmailDraft: openWindowsEmailDraft,
-      openExternal: (url) => shell.openExternal(url),
-      openPath: (path) => shell.openPath(path),
-      showItemInFolder: (path) => shell.showItemInFolder(path)
-    })
+    initializeDatabaseServices()
   } catch (error) {
-    repositories = undefined
-    productService = undefined
-    customerService = undefined
-    businessSettingsService = undefined
-    taxSettingsService = undefined
-    salesService = undefined
-    salesExportService = undefined
-    receiptService = undefined
-    backupService = undefined
-    backupScheduler?.stop()
-    backupScheduler = undefined
-    database?.close()
+    clearDatabaseServices()
     const message = error instanceof Error ? error.message : String(error)
     dialog.showErrorBox('Unable to open the local database', message)
     app.quit()

@@ -345,7 +345,7 @@ function SettingsScreen({ onBusinessNameChange }: SettingsScreenProps): React.JS
       if (!result.ok) {
         setBackupError(result.error.message)
       } else if (result.data.restored) {
-        setBackupNotice('Backup restored. The app is restarting.')
+        setBackupNotice('Backup restored. The app is refreshing.')
       }
     } catch {
       setBackupError('The backup could not be restored. Try again.')
@@ -844,6 +844,12 @@ function SettingsScreen({ onBusinessNameChange }: SettingsScreenProps): React.JS
               <strong>Backup folder</strong>
               <span>{backupStatus?.destinationPath ?? 'Not selected'}</span>
             </div>
+            {backupStatus?.destinationOnSameDrive && (
+              <p className="backup-drive-warning" role="status">
+                This folder is on the same drive as the POS database. Backups here will not protect
+                against drive failure. Choose another drive for that protection.
+              </p>
+            )}
             {!backupStatus?.destinationPath && (
               <p className="settings-help">
                 Choose a folder on a separate drive to enable backups.
