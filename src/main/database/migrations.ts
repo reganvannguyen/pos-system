@@ -10,6 +10,7 @@ import saleCharges from './migrations/009_sale_charges.sql?raw'
 import chargePaymentTenders from './migrations/010_charge_payment_tenders.sql?raw'
 import customers from './migrations/011_customers.sql?raw'
 import transactionCustomers from './migrations/012_transaction_customers.sql?raw'
+import receiptFontWeight from './migrations/013_receipt_font_weight.sql?raw'
 import { backfillTransactionNumbers } from './transaction-numbers'
 import type { PosDatabase } from './types'
 
@@ -31,7 +32,8 @@ const migrations: Migration[] = [
   { version: 9, sql: saleCharges },
   { version: 10, sql: chargePaymentTenders },
   { version: 11, sql: customers },
-  { version: 12, sql: transactionCustomers }
+  { version: 12, sql: transactionCustomers },
+  { version: 13, sql: receiptFontWeight }
 ]
 
 export function runMigrations(database: PosDatabase): void {

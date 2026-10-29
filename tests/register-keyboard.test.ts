@@ -25,7 +25,9 @@ const availableRegister = {
   clearEnabled: true,
   lineSelectionEnabled: true,
   priceEditEnabled: true,
-  paymentEnabled: true
+  paymentEnabled: true,
+  zeroTotalSaleEnabled: false,
+  customItemEnabled: true
 }
 
 test('register shortcuts resolve to their assigned actions', () => {
@@ -44,6 +46,11 @@ test('register shortcuts resolve to their assigned actions', () => {
     'select-line-for-price'
   )
   assert.equal(resolveRegisterShortcut({ ...availableRegister, key: 'F9' }), 'open-payment')
+  assert.equal(
+    resolveRegisterShortcut({ ...availableRegister, key: 'F9', zeroTotalSaleEnabled: true }),
+    'complete-zero-total-sale'
+  )
+  assert.equal(resolveRegisterShortcut({ ...availableRegister, key: 'F10' }), 'open-custom-item')
 })
 
 test('mode shortcut stays out of text entry and all shortcuts stay out of dialogs', () => {
@@ -84,6 +91,19 @@ test('shortcuts respect modifiers, repeats, and unavailable actions', () => {
   )
   assert.equal(
     resolveRegisterShortcut({ ...availableRegister, key: 'F9', paymentEnabled: false }),
+    null
+  )
+  assert.equal(
+    resolveRegisterShortcut({
+      ...availableRegister,
+      key: 'F9',
+      paymentEnabled: false,
+      zeroTotalSaleEnabled: false
+    }),
+    null
+  )
+  assert.equal(
+    resolveRegisterShortcut({ ...availableRegister, key: 'F10', customItemEnabled: false }),
     null
   )
 })

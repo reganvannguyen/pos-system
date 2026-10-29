@@ -194,6 +194,9 @@ function registerReceiptHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.receiptsOpenPdf, (_event, saleId: unknown) =>
     toReceiptResult(() => requireReceiptService().openPdf(saleId))
   )
+  ipcMain.handle(IPC_CHANNELS.receiptsViewPdf, (_event, saleId: unknown) =>
+    toReceiptResult(() => requireReceiptService().viewPdf(saleId))
+  )
 }
 
 function registerBusinessSettingsHandlers(): void {
@@ -388,6 +391,7 @@ app.whenReady().then(() => {
       deletePdf: (path) => unlink(path),
       openEmailDraft: openWindowsEmailDraft,
       openExternal: (url) => shell.openExternal(url),
+      openPath: (path) => shell.openPath(path),
       showItemInFolder: (path) => shell.showItemInFolder(path)
     })
   } catch (error) {

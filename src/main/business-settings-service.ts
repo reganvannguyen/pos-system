@@ -47,7 +47,8 @@ export function createBusinessSettingsService(repository: SettingsRepository) {
         businessPhone: optionalString(value, 'businessPhone'),
         businessEmail,
         businessGstNumber: optionalString(value, 'businessGstNumber'),
-        businessWebsite: optionalString(value, 'businessWebsite')
+        businessWebsite: optionalString(value, 'businessWebsite'),
+        receiptFontWeight: parseReceiptFontWeight(value.receiptFontWeight)
       }
       return toBusinessSettings(repository.saveBusiness(settings))
     }
@@ -88,7 +89,7 @@ function isValidEmail(value: string): boolean {
 
 function optionalString(
   value: Record<string, unknown>,
-  field: Exclude<BusinessSettingsField, 'businessName'>
+  field: Exclude<BusinessSettingsField, 'businessName' | 'receiptFontWeight'>
 ): string {
   const entry = value[field]
   if (entry === undefined || entry === null) return ''
@@ -102,6 +103,16 @@ function optionalString(
   return entry.trim()
 }
 
+function parseReceiptFontWeight(value: unknown): number {
+  if (value === undefined) return 400
+  if (typeof value === 'number' && [300, 400, 500, 600, 700].includes(value)) return value
+  throw new BusinessSettingsError(
+    'invalid-input',
+    'Choose a font thickness from 300 to 700 in steps of 100.',
+    'receiptFontWeight'
+  )
+}
+
 function toBusinessSettings(settings: ReturnType<SettingsRepository['get']>): BusinessSettings {
   return {
     businessName: settings.business_name,
@@ -112,6 +123,7 @@ function toBusinessSettings(settings: ReturnType<SettingsRepository['get']>): Bu
     businessPhone: settings.business_phone,
     businessEmail: settings.business_email,
     businessGstNumber: settings.business_gst_number,
-    businessWebsite: settings.business_website
+    businessWebsite: settings.business_website,
+    receiptFontWeight: settings.receipt_font_weight
   }
 }

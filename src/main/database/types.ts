@@ -95,6 +95,7 @@ export interface SettingsRecord {
   business_phone: string
   business_gst_number: string
   business_website: string
+  receipt_font_weight: number
   tax_rate_basis_points: number
   printer_name: string | null
   auto_print_receipt: 0 | 1

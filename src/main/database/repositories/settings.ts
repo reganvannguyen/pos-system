@@ -5,7 +5,7 @@ export function createSettingsRepository(database: PosDatabase) {
   const getStatement = database.prepare(
     `SELECT id, business_name, business_email, business_address, business_city, business_province,
             business_postal_code, business_phone, business_gst_number, business_website,
-            tax_rate_basis_points, printer_name, auto_print_receipt
+            receipt_font_weight, tax_rate_basis_points, printer_name, auto_print_receipt
      FROM settings
      WHERE id = 1`
   )
@@ -24,7 +24,8 @@ export function createSettingsRepository(database: PosDatabase) {
          business_postal_code = @businessPostalCode,
          business_phone = @businessPhone,
          business_gst_number = @businessGstNumber,
-         business_website = @businessWebsite
+         business_website = @businessWebsite,
+         receipt_font_weight = @receiptFontWeight
      WHERE id = 1`
   )
 

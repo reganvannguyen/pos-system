@@ -1,4 +1,9 @@
-import type { ChargePaymentTenderType, TenderInput, CheckoutItem } from '../../../shared/pos-api'
+import type {
+  ChargePaymentTenderType,
+  CheckoutItem,
+  ReturnItemInput,
+  TenderInput
+} from '../../../shared/pos-api'
 import type {
   ChargePaymentRecord,
   PosDatabase,
@@ -14,7 +19,7 @@ import { createTaxRepository } from './taxes'
 export type SaleLineInput = CheckoutItem
 
 export interface SaleQuoteLineRecord {
-  product_id: number
+  product_id: number | null
   sku: string
   product_name: string
   catalog_unit_price_cents: number
@@ -32,11 +37,7 @@ export interface SaleQuoteRecord {
   total_cents: number
 }
 
-export interface ReturnLineInput {
-  productId: number
-  quantity: number
-  restock: boolean
-}
+export type ReturnLineInput = ReturnItemInput
 
 export interface ReturnQuoteRecord extends SaleQuoteRecord {
   items: Array<SaleQuoteLineRecord & { restock: boolean }>
@@ -364,6 +365,27 @@ export function createSalesRepository(
     let subtotal = 0n
 
     for (const item of items) {
+      if ('customItem' in item) {
+        const custom = item.customItem
+        const unitPriceCents = item.priceOverride?.unitPriceCents ?? custom.unitPriceCents
+        const lineTotal = toSafeCents(
+          BigInt(unitPriceCents) * BigInt(item.quantity),
+          'The sale amount is too large to process.'
+        )
+        subtotal += BigInt(lineTotal)
+        quoteItems.push({
+          product_id: null,
+          sku: '',
+          product_name: custom.name,
+          catalog_unit_price_cents: custom.unitPriceCents,
+          unit_price_cents: unitPriceCents,
+          price_override_reason: item.priceOverride?.reason.trim() || null,
+          quantity: item.quantity,
+          line_total_cents: lineTotal
+        })
+        continue
+      }
+
       const product = getProductStatement.get(item.productId) as ProductRecord | undefined
       if (!product || product.is_active !== 1) {
         throw new SalesRepositoryError(
@@ -403,6 +425,27 @@ export function createSalesRepository(
     let subtotal = 0n
 
     for (const item of items) {
+      if ('customItem' in item) {
+        const custom = item.customItem
+        const lineTotal = toSafeCents(
+          BigInt(custom.unitPriceCents) * BigInt(item.quantity),
+          'The return amount is too large to process.'
+        )
+        subtotal += BigInt(lineTotal)
+        quoteItems.push({
+          product_id: null,
+          sku: '',
+          product_name: custom.name,
+          catalog_unit_price_cents: custom.unitPriceCents,
+          unit_price_cents: custom.unitPriceCents,
+          price_override_reason: null,
+          quantity: item.quantity,
+          line_total_cents: lineTotal,
+          restock: false
+        })
+        continue
+      }
+
       const product = getProductStatement.get(item.productId) as ProductRecord | undefined
       if (!product) {
         throw new SalesRepositoryError(
@@ -530,20 +573,22 @@ export function createSalesRepository(
       const saleId = Number(saleResult.lastInsertRowid)
 
       for (const item of quote.items) {
-        const product = getProductStatement.get(item.product_id) as ProductRecord | undefined
-        if (!product || product.is_active !== 1) {
-          throw new SalesRepositoryError(
-            'unavailable-product',
-            'A product in this cart is no longer active. Remove it to continue.'
-          )
-        }
+        if (item.product_id !== null) {
+          const product = getProductStatement.get(item.product_id) as ProductRecord | undefined
+          if (!product || product.is_active !== 1) {
+            throw new SalesRepositoryError(
+              'unavailable-product',
+              'A product in this cart is no longer active. Remove it to continue.'
+            )
+          }
 
-        if (product.stock_quantity !== null) {
-          const update = decrementStockStatement.run({
-            productId: item.product_id,
-            quantity: item.quantity
-          })
-          if (update.changes !== 1) throw insufficientStock(product, item.quantity)
+          if (product.stock_quantity !== null) {
+            const update = decrementStockStatement.run({
+              productId: item.product_id,
+              quantity: item.quantity
+            })
+            if (update.changes !== 1) throw insufficientStock(product, item.quantity)
+          }
         }
 
         insertSaleItemStatement.run({
@@ -630,15 +675,18 @@ export function createSalesRepository(
       const saleId = Number(saleResult.lastInsertRowid)
 
       for (const item of quote.items) {
-        const product = getProductStatement.get(item.product_id) as ProductRecord | undefined
-        if (!product) {
-          throw new SalesRepositoryError(
-            'unavailable-product',
-            'A product in this return could not be found.'
-          )
+        let product: ProductRecord | undefined
+        if (item.product_id !== null) {
+          product = getProductStatement.get(item.product_id) as ProductRecord | undefined
+          if (!product) {
+            throw new SalesRepositoryError(
+              'unavailable-product',
+              'A product in this return could not be found.'
+            )
+          }
         }
         let restockedQuantity = 0
-        if (item.restock && product.stock_quantity !== null) {
+        if (item.restock && product && product.stock_quantity !== null) {
           if (
             !Number.isSafeInteger(product.stock_quantity) ||
             product.stock_quantity + item.quantity > Number.MAX_SAFE_INTEGER

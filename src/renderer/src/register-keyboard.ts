@@ -7,6 +7,8 @@ export type RegisterShortcutAction =
   | 'select-line-for-removal'
   | 'select-line-for-price'
   | 'open-payment'
+  | 'complete-zero-total-sale'
+  | 'open-custom-item'
 
 export interface RegisterShortcutContext {
   key: string
@@ -24,6 +26,8 @@ export interface RegisterShortcutContext {
   lineSelectionEnabled: boolean
   priceEditEnabled: boolean
   paymentEnabled: boolean
+  zeroTotalSaleEnabled: boolean
+  customItemEnabled: boolean
 }
 
 export interface FocusRect {
@@ -53,7 +57,11 @@ export function resolveRegisterShortcut(
   if (context.key === 'F4') return context.clearEnabled ? 'clear-cart' : null
   if (context.key === 'F5') return context.lineSelectionEnabled ? 'select-line-for-removal' : null
   if (context.key === 'F6') return context.priceEditEnabled ? 'select-line-for-price' : null
-  if (context.key === 'F9') return context.paymentEnabled ? 'open-payment' : null
+  if (context.key === 'F9') {
+    if (context.zeroTotalSaleEnabled) return 'complete-zero-total-sale'
+    return context.paymentEnabled ? 'open-payment' : null
+  }
+  if (context.key === 'F10') return context.customItemEnabled ? 'open-custom-item' : null
   if (context.key.toLowerCase() === 'r' && !context.textEntryFocused) return 'toggle-mode'
   return null
 }

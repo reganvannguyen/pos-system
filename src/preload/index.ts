@@ -57,7 +57,8 @@ const posApi: PosApi = {
       ipcRenderer.invoke(IPC_CHANNELS.receiptsEmailDraft, saleId, recipient),
     textDraft: (saleId, recipient) =>
       ipcRenderer.invoke(IPC_CHANNELS.receiptsTextDraft, saleId, recipient),
-    openPdf: (saleId) => ipcRenderer.invoke(IPC_CHANNELS.receiptsOpenPdf, saleId)
+    openPdf: (saleId) => ipcRenderer.invoke(IPC_CHANNELS.receiptsOpenPdf, saleId),
+    viewPdf: (saleId) => ipcRenderer.invoke(IPC_CHANNELS.receiptsViewPdf, saleId)
   }
 }
 

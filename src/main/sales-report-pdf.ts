@@ -68,7 +68,7 @@ export function renderSalesReportPdfHtml(document: SalesReportPdfDocument): stri
       const taxAmounts = new Map(product.taxAmounts.map((tax) => [tax.name, tax.amountCents]))
       return `<tr>
         <td>${escapeHtml(product.name)}</td>
-        <td>${escapeHtml(product.sku)}</td>
+        <td>${escapeHtml(product.sku || '—')}</td>
         <td class="number">${product.netQuantity}</td>
         <td class="number">${escapeHtml(formatCents(product.subtotalCents))}</td>
         ${taxNames.map((name) => `<td class="number">${escapeHtml(formatCents(taxAmounts.get(name) ?? 0))}</td>`).join('')}
@@ -233,19 +233,17 @@ export function renderSalesReportPdfHtml(document: SalesReportPdfDocument): stri
     </div>
   </header>
   ${summarySection}
-  ${paymentsSection}
+  ${
+    document.reportType === 'itemized'
+      ? `${paymentsSection}
   ${taxSection}
   <section>
-    ${
-      document.reportType === 'itemized'
-        ? `<h2>Transactions</h2>
+    <h2>Transactions</h2>
     <table class="transactions">
       <thead><tr><th>Transaction</th><th>Date / time</th><th>Payment and tender</th><th>Items</th><th>Subtotal</th><th>Tax</th><th>Total</th><th>Return reason</th></tr></thead>
       <tbody>${transactionRows || '<tr><td class="empty" colspan="8">No transactions in this period.</td></tr>'}</tbody>
       <tfoot><tr><td colspan="3">Net totals · ${document.report.totals.transactionCount} transactions</td><td></td><td>${escapeHtml(formatCents(totals.netSubtotalCents))}</td><td>${escapeHtml(formatCents(totals.netTaxCents))}</td><td>${escapeHtml(formatCents(totals.netTotalCents))}</td><td></td></tr></tfoot>
-    </table>`
-        : ''
-    }
+    </table>
     <h2>Item totals for the period</h2>
     <table class="products">
       <colgroup>
@@ -272,7 +270,9 @@ export function renderSalesReportPdfHtml(document: SalesReportPdfDocument): stri
       <tbody>${repaymentRows || '<tr><td class="empty" colspan="3">No Charge repayments in this period.</td></tr>'}</tbody>
       <tfoot><tr><td colspan="2">Total repayments</td><td>${escapeHtml(formatCents(repaymentTotalCents))}</td></tr></tfoot>
     </table>
-  </section>
+  </section>`
+      : ''
+  }
 </body>
 </html>`
 }

@@ -12,6 +12,10 @@ const schema =
   readFileSync(
     join(process.cwd(), 'src/main/database/migrations/012_transaction_customers.sql'),
     'utf8'
+  ) +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/013_receipt_font_weight.sql'),
+    'utf8'
   )
 
 function withCustomerService<T>(run: (service: ReturnType<typeof createCustomerService>) => T): T {

@@ -44,6 +44,7 @@ interface ReceiptServiceDependencies {
     pdfPath: string
   ) => Promise<boolean>
   openExternal: (url: string) => Promise<void>
+  openPath: (path: string) => Promise<string>
   showItemInFolder: (path: string) => void
 }
 
@@ -66,6 +67,7 @@ export function createReceiptService({
   deletePdf,
   openEmailDraft,
   openExternal,
+  openPath,
   showItemInFolder
 }: ReceiptServiceDependencies) {
   const generatedPdfBySale = new Map<number, string>()
@@ -222,6 +224,22 @@ export function createReceiptService({
       }
       showItemInFolder(path)
       return { saleId, opened: true }
+    },
+
+    async viewPdf(saleIdValue: unknown): Promise<ReceiptPdfResult> {
+      const saleId = parseSaleId(saleIdValue)
+      const path = await createReceiptPdf(getSale(saleId), settings.get(), saleId)
+      let openError: string
+      try {
+        openError = await openPath(path)
+      } catch (error) {
+        openError = error instanceof Error ? error.message : 'No default PDF viewer is available.'
+      }
+      if (openError) {
+        void deletePdf(path).catch(() => {})
+        throw new ReceiptServiceError('pdf-failed', `Receipt PDF could not be opened. ${openError}`)
+      }
+      return { saleId, opened: true }
     }
   }
 
@@ -316,6 +334,16 @@ function toReceiptTemplateSale(sale: SaleDetailRecord): ReceiptTemplateSale {
       amountAppliedCents: signedAmount(payment.amount_applied_cents, sale.transaction_type),
       changeCents: payment.change_cents
     })),
+    customer:
+      sale.customer_id === null
+        ? null
+        : {
+            name:
+              [sale.customer_first_name, sale.customer_last_name].filter(Boolean).join(' ') ||
+              sale.customer_company_name ||
+              '',
+            companyName: sale.customer_company_name ?? ''
+          },
     charge: sale.charge
       ? {
           customer: {
@@ -342,7 +370,8 @@ function toReceiptBusiness(settings: SettingsRecord): ReceiptBusinessDetails {
     businessPhone: settings.business_phone,
     businessEmail: settings.business_email,
     businessGstNumber: settings.business_gst_number,
-    businessWebsite: settings.business_website
+    businessWebsite: settings.business_website,
+    receiptFontWeight: settings.receipt_font_weight
   }
 }
 

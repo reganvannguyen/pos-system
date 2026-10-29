@@ -118,6 +118,52 @@ test('payment report section keeps e-transfer and check receipts separate', () =
   )
 })
 
+test('essential sections always include one net tax card per tax before net sales', () => {
+  const taxTotals = [
+    { taxName: 'GST', salesTaxCents: 500, returnsTaxCents: -100, netTaxCents: 400 },
+    { taxName: 'PST', salesTaxCents: 300, returnsTaxCents: -350, netTaxCents: -50 },
+    {
+      taxName: 'Unitemized tax',
+      salesTaxCents: 25,
+      returnsTaxCents: 0,
+      netTaxCents: 25
+    }
+  ]
+
+  const sections = getSalesReportDisplaySections(totals, [], taxTotals)
+  const taxes = sections.find((section) => section.id === 'taxes')
+
+  assert.deepEqual(
+    sections.map((section) => section.id),
+    ['activity', 'payments', 'taxes', 'net-sales']
+  )
+  assert.deepEqual(
+    taxes?.metrics.map(({ label, value, kind }) => [label, value, kind]),
+    [
+      ['GST', 400, 'money'],
+      ['PST', -50, 'money'],
+      ['Unitemized tax', 25, 'money']
+    ]
+  )
+  assert.equal(taxes?.emptyMessage, undefined)
+})
+
+test('Taxes stays visible with an empty message when the period has no tax totals', () => {
+  const sections = getSalesReportDisplaySections(totals, ['cash'])
+  const taxes = sections.find((section) => section.id === 'taxes')
+
+  assert.deepEqual(
+    sections.map((section) => section.id),
+    ['activity', 'payments', 'taxes', 'additional', 'net-sales']
+  )
+  assert.deepEqual(taxes?.metrics, [])
+  assert.equal(taxes?.emptyMessage, 'No tax recorded in this period.')
+  assert.deepEqual(
+    sections.find((section) => section.id === 'additional')?.metrics.map(({ label }) => label),
+    ['Cash received', 'Cash refunded']
+  )
+})
+
 test('saved summary selections support defaults, multiple groups, and old single-group values', () => {
   assert.deepEqual(parseSalesSummaryGroups(null), ['overview'])
   assert.deepEqual(parseSalesSummaryGroups('net'), ['net'])

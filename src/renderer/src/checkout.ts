@@ -1,4 +1,9 @@
-import type { ChargePaymentTenderType, SavedTenderType, TenderInput } from '../../shared/pos-api'
+import type {
+  ChargePaymentTenderType,
+  SavedTenderType,
+  TenderInput,
+  TenderType
+} from '../../shared/pos-api'
 
 export interface CheckoutSession {
   tenders: TenderInput[]
@@ -28,6 +33,14 @@ export function parseCadCents(value: string): number | null {
 
 export function centsInput(value: number): string {
   return (value / 100).toFixed(2)
+}
+
+export function initialTenderAmount(
+  type: TenderType,
+  isReturn: boolean,
+  remainingCents: number
+): string {
+  return type === 'cash' && isReturn ? '' : centsInput(remainingCents)
 }
 
 export function totalTenderedCents(tenders: TenderInput[]): number {

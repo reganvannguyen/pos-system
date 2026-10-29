@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import Database from 'better-sqlite3'
+import { createCustomerRepository } from '../src/main/database/repositories/customers'
 import { createProductRepository } from '../src/main/database/repositories/products'
 import { createSalesRepository } from '../src/main/database/repositories/sales'
 import { createSettingsRepository } from '../src/main/database/repositories/settings'
@@ -57,6 +58,10 @@ const schema =
   readFileSync(
     join(process.cwd(), 'src/main/database/migrations/012_transaction_customers.sql'),
     'utf8'
+  ) +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/013_receipt_font_weight.sql'),
+    'utf8'
   )
 
 async function withReceiptService(
@@ -71,6 +76,10 @@ async function withReceiptService(
     externalUrls: string[]
     shownFiles: string[]
     pdfJobs: string[]
+    openedPdfs: string[]
+    deletedPdfs: string[]
+    setPdfGenerationError: (message: string) => void
+    setPdfOpenError: (message: string) => void
     setEmailAttachmentSupport: (supported: boolean) => void
     setExternalAppAvailable: (available: boolean) => void
   }) => Promise<void>
@@ -88,6 +97,10 @@ async function withReceiptService(
   const externalUrls: string[] = []
   const shownFiles: string[] = []
   const pdfJobs: string[] = []
+  const openedPdfs: string[] = []
+  const deletedPdfs: string[] = []
+  let pdfGenerationError = ''
+  let pdfOpenError = ''
   let emailAttachmentSupported = false
   let externalAppAvailable = true
   const receipt = createReceiptService({
@@ -99,13 +112,20 @@ async function withReceiptService(
     },
     createPdf: async (html, saleId) => {
       pdfJobs.push(html)
+      if (pdfGenerationError) throw new Error(pdfGenerationError)
       return `/tmp/receipt-${saleId}.pdf`
     },
-    deletePdf: async () => {},
+    deletePdf: async (path) => {
+      deletedPdfs.push(path)
+    },
     openEmailDraft: async () => emailAttachmentSupported,
     openExternal: async (url) => {
       if (!externalAppAvailable) throw new Error('No application is registered for this URI.')
       externalUrls.push(url)
+    },
+    openPath: async (path) => {
+      openedPdfs.push(path)
+      return pdfOpenError
     },
     showItemInFolder: (path) => shownFiles.push(path)
   })
@@ -124,6 +144,14 @@ async function withReceiptService(
       externalUrls,
       shownFiles,
       pdfJobs,
+      openedPdfs,
+      deletedPdfs,
+      setPdfGenerationError: (message) => {
+        pdfGenerationError = message
+      },
+      setPdfOpenError: (message) => {
+        pdfOpenError = message
+      },
       setEmailAttachmentSupport: (supported) => {
         emailAttachmentSupported = supported
       },
@@ -166,7 +194,8 @@ function businessSettings(businessName: string, businessEmail = '') {
     businessPhone: '',
     businessEmail,
     businessGstNumber: '',
-    businessWebsite: ''
+    businessWebsite: '',
+    receiptFontWeight: 400
   }
 }
 
@@ -196,7 +225,10 @@ test('live receipt preview renders draft details in the shared 58 mm invoice tem
     html,
     /body \{ width: 100%; max-width: 48mm; margin: 0 auto; padding: 5mm 1mm 4mm; color: #000;/
   )
-  assert.match(html, /font: 600 11px\/1\.35 Consolas/)
+  assert.match(html, /--receipt-font-weight: 400/)
+  assert.match(html, /font: var\(--receipt-font-weight\) 11px\/1\.35 Consolas/)
+  assert.match(html, /--receipt-title-font-weight: 500/)
+  assert.match(html, /--receipt-bold-font-weight: 600/)
   assert.match(html, /text-align: center; margin-bottom: 9px/)
   assert.match(html, /td \{ padding: 5px 0;/)
   assert.match(html, /width: 43%; text-align: right/)
@@ -213,8 +245,22 @@ test('live receipt preview renders draft details in the shared 58 mm invoice tem
   assert.match(html, /Amount tendered/)
   assert.match(html, /Change due/)
   assert.match(html, /Payment type/)
+  assert.match(html, /<p>Thank you<\/p>/)
+  assert.doesNotMatch(html, /Thank you for your purchase/)
   assert.match(html, /GST\/HST #123456789RT0001/)
   assert.match(html, /rainbow\.example/)
+})
+
+test('receipt preview follows selected weight while preserving relative emphasis', () => {
+  const html = renderReceiptPreviewHtml({
+    ...businessSettings('Corner Shop'),
+    receiptFontWeight: 700
+  })
+
+  assert.match(html, /--receipt-font-weight: 700/)
+  assert.match(html, /--receipt-title-font-weight: 800/)
+  assert.match(html, /--receipt-bold-font-weight: 900/)
+  assert.match(html, /font-weight: var\(--receipt-bold-font-weight\)/)
 })
 
 test('charged receipt prints escaped customer details and the current balance due', () => {
@@ -252,6 +298,73 @@ test('charged receipt prints escaped customer details and the current balance du
   assert.match(html, /Balance due/)
   assert.match(html, /\$6\.50/)
   assert.match(html, /Charge/)
+})
+
+test('PDF receipts show a linked customer and omit the customer section when none is linked', async () => {
+  await withReceiptService(async ({ database, products, sales, receipt, pdfJobs }) => {
+    const customer = createCustomerRepository(database).create({
+      firstName: 'Ada',
+      lastName: 'Lovelace',
+      companyName: 'Analytical Engines',
+      address: '1 Algorithm Lane',
+      phoneNumber: '2505550100',
+      email: 'ada@example.com',
+      imageDataUrl: null
+    })!
+    const productId = createProduct(products, {
+      sku: 'CUSTOMER-RECEIPT',
+      name: 'Printed photo',
+      priceCents: 500
+    })
+    const service = createSalesService(sales)
+    const saleWithoutCustomer = service.completeCheckout({
+      items: [{ productId, quantity: 1 }],
+      tenders: [{ type: 'cash', amountCents: 500 }]
+    }).sale
+    const saleWithCustomer = service.completeCheckout({
+      items: [{ productId, quantity: 1 }],
+      tenders: [{ type: 'cash', amountCents: 500 }],
+      customerId: customer.id
+    }).sale
+    const returnWithCustomer = service.completeReturn({
+      reason: 'Customer changed their mind',
+      items: [{ productId, quantity: 1, restock: false }],
+      tenders: [{ type: 'cash', amountCents: 500 }],
+      customerId: customer.id
+    }).return
+
+    await receipt.viewPdf(saleWithoutCustomer.id)
+    await receipt.viewPdf(saleWithCustomer.id)
+    await receipt.viewPdf(returnWithCustomer.id)
+
+    assert.doesNotMatch(pdfJobs[0]!, /aria-label="Customer details"/)
+    assert.match(pdfJobs[1]!, /aria-label="Customer details"/)
+    assert.match(pdfJobs[1]!, /<strong>CUSTOMER<\/strong>/)
+    assert.match(pdfJobs[1]!, /Ada Lovelace/)
+    assert.match(pdfJobs[1]!, /Analytical Engines/)
+    assert.match(pdfJobs[2]!, /RETURN NO\./)
+    assert.match(pdfJobs[2]!, /Ada Lovelace/)
+  })
+})
+
+test('prints custom transaction items without a catalog SKU', async () => {
+  await withReceiptService(async ({ database, sales, receipt, printJobs }) => {
+    const checkout = createSalesService(sales).completeCheckout({
+      items: [
+        {
+          customItem: { name: 'Photo Studio Shoot', unitPriceCents: 1000 },
+          quantity: 1
+        }
+      ],
+      tenders: [{ type: 'cash', amountCents: 1000 }]
+    })
+    await receipt.saveSettings({ printerName: 'Receipt_Printer' })
+    await receipt.print(checkout.sale.id)
+
+    assert.match(printJobs[0]!, /Photo Studio Shoot/)
+    assert.match(printJobs[0]!, /SKU —/)
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM products').get()?.count, 0)
+  })
 })
 
 test('lists printers by friendly name and stores the operating-system name', async () => {
@@ -409,6 +522,7 @@ test('return receipts use negative amounts, Return #, refund labels, and omit th
 
     await receipt.print(returned.return.id)
     const html = printJobs[0]!
+    assert.match(html, /<p>Return processed<\/p>/)
     assert.match(
       html,
       new RegExp(`RETURN NO\\. <span class="invoice-number">${returned.return.transactionNumber}`)
@@ -428,6 +542,85 @@ test('return receipts use negative amounts, Return #, refund labels, and omit th
     assert.match(text.message, /Refunded -\$7\.00/)
     assert.doesNotMatch(text.message, /Internal reason/)
   })
+})
+
+test('views saved sale and return receipts in the default PDF viewer', async () => {
+  await withReceiptService(
+    async ({ database, products, sales, settings, receipt, pdfJobs, openedPdfs }) => {
+      settings.saveBusiness({
+        ...businessSettings('Viewer Shop'),
+        receiptFontWeight: 600
+      })
+      const productId = createProduct(products, {
+        sku: 'VIEW-RECEIPT',
+        name: 'Receipt preview item',
+        priceCents: 700
+      })
+      const service = createSalesService(sales)
+      const checkout = service.completeCheckout({
+        items: [{ productId, quantity: 1 }],
+        tenders: [{ type: 'cash', amountCents: 700 }]
+      })
+      const returned = service.completeReturn({
+        reason: 'Customer changed their mind',
+        items: [{ productId, quantity: 1, restock: false }],
+        tenders: [{ type: 'cash', amountCents: 700 }]
+      })
+      const transactionCount = database.prepare('SELECT COUNT(*) AS count FROM sales').get()?.count
+
+      assert.deepEqual(await receipt.viewPdf(checkout.sale.id), {
+        saleId: checkout.sale.id,
+        opened: true
+      })
+      assert.deepEqual(await receipt.viewPdf(returned.return.id), {
+        saleId: returned.return.id,
+        opened: true
+      })
+
+      assert.deepEqual(openedPdfs, [
+        `/tmp/receipt-${checkout.sale.id}.pdf`,
+        `/tmp/receipt-${returned.return.id}.pdf`
+      ])
+      assert.match(pdfJobs[0]!, /Viewer Shop/)
+      assert.match(pdfJobs[0]!, /--receipt-font-weight: 600/)
+      assert.match(pdfJobs[0]!, /INVOICE NO\./)
+      assert.match(pdfJobs[0]!, /Receipt preview item/)
+      assert.match(pdfJobs[1]!, /RETURN NO\./)
+      assert.match(pdfJobs[1]!, /Receipt preview item/)
+      assert.equal(
+        database.prepare('SELECT COUNT(*) AS count FROM sales').get()?.count,
+        transactionCount
+      )
+    }
+  )
+})
+
+test('reports receipt PDF generation and viewer failures', async () => {
+  await withReceiptService(
+    async ({ products, sales, receipt, setPdfGenerationError, setPdfOpenError, deletedPdfs }) => {
+      const productId = createProduct(products, {
+        sku: 'VIEW-ERROR',
+        name: 'Viewer error item',
+        priceCents: 500
+      })
+      const checkout = createSalesService(sales).completeCheckout({
+        items: [{ productId, quantity: 1 }],
+        tenders: [{ type: 'cash', amountCents: 500 }]
+      })
+
+      setPdfGenerationError('PDF renderer failed')
+      const generationResult = await toReceiptResult(() => receipt.viewPdf(checkout.sale.id))
+      assertReceiptError(generationResult, 'pdf-failed')
+      if (!generationResult.ok) assert.match(generationResult.error.message, /PDF renderer failed/)
+
+      setPdfGenerationError('')
+      setPdfOpenError('No PDF viewer is registered.')
+      const viewerResult = await toReceiptResult(() => receipt.viewPdf(checkout.sale.id))
+      assertReceiptError(viewerResult, 'pdf-failed')
+      if (!viewerResult.ok) assert.match(viewerResult.error.message, /No PDF viewer is registered/)
+      assert.deepEqual(deletedPdfs, [`/tmp/receipt-${checkout.sale.id}.pdf`])
+    }
+  )
 })
 
 test('print failure leaves the saved sale and decremented stock intact for reprinting', async () => {
@@ -458,6 +651,7 @@ test('print failure leaves the saved sale and decremented stock intact for repri
       deletePdf: async () => {},
       openEmailDraft: async () => false,
       openExternal: async () => {},
+      openPath: async () => '',
       showItemInFolder: () => {}
     })
 
@@ -482,6 +676,7 @@ test('print failure leaves the saved sale and decremented stock intact for repri
 test('rejects missing sales and missing or disconnected configured printers', async () => {
   await withReceiptService(async ({ receipt, setPrinters }) => {
     assertReceiptError(await toReceiptResult(() => receipt.print(1)), 'printer-not-selected')
+    assertReceiptError(await toReceiptResult(() => receipt.viewPdf(1)), 'sale-not-found')
     await receipt.saveSettings({ printerName: 'Receipt_Printer' })
     assertReceiptError(await toReceiptResult(() => receipt.print(1)), 'sale-not-found')
     setPrinters([])
@@ -502,7 +697,10 @@ test('prepares email drafts with saved receipt PDF and supports manual attachmen
       pdfJobs,
       setExternalAppAvailable
     }) => {
-      settings.saveBusiness(businessSettings('Harbour Market', 'hello@harbour.example'))
+      settings.saveBusiness({
+        ...businessSettings('Harbour Market', 'hello@harbour.example'),
+        receiptFontWeight: 600
+      })
       const productId = createProduct(products, {
         sku: 'EMAIL-ITEM',
         name: 'Canned coffee',
@@ -523,6 +721,9 @@ test('prepares email drafts with saved receipt PDF and supports manual attachmen
       assert.match(draft.body, /Harbour Market/)
       assert.match(externalUrls[0]!, /^mailto:customer%40example\.com\?subject=/)
       assert.match(pdfJobs[0]!, /hello@harbour\.example/)
+      assert.match(pdfJobs[0]!, /--receipt-font-weight: 600/)
+      assert.match(pdfJobs[0]!, /--receipt-title-font-weight: 700/)
+      assert.match(pdfJobs[0]!, /--receipt-bold-font-weight: 800/)
       assert.match(pdfJobs[0]!, /Canned coffee/)
       assert.doesNotMatch(pdfJobs[0]!, /Opened box/)
 

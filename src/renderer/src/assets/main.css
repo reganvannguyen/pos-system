@@ -1873,6 +1873,26 @@ kbd {
   max-width: none;
 }
 
+.receipt-font-weight-field > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.receipt-font-weight-field output {
+  font-variant-numeric: tabular-nums;
+}
+
+.receipt-font-weight-field input[type='range'] {
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  accent-color: #171717;
+  cursor: pointer;
+}
+
 .receipt-location-group {
   display: grid;
   gap: 13px;
@@ -2455,6 +2475,12 @@ kbd {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+}
+
+.sales-summary-empty {
+  margin: 0;
+  color: #65717a;
+  font-size: 12px;
 }
 
 .sales-summary-picker {

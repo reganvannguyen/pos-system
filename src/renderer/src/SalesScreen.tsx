@@ -531,29 +531,37 @@ function SalesScreen(): React.JSX.Element {
                 className="sales-report-summary"
                 aria-label={`Transactions, sales, returns, cash net, debit net, credit net, e-transfer received, check received, net subtotal, net tax, and net total${summaryGroups.length ? `, plus ${summaryPickerText(summaryGroups)}` : ''}`}
               >
-                {getSalesReportDisplaySections(report.totals, summaryGroups).map((section) => (
-                  <section
-                    className={`sales-summary-section sales-summary-section--${section.id}`}
-                    aria-labelledby={`sales-summary-${section.id}`}
-                    key={section.id}
-                  >
-                    <h2 className="sales-summary-heading" id={`sales-summary-${section.id}`}>
-                      {section.label}
-                    </h2>
-                    <div className="sales-report-summary-grid">
-                      {section.metrics.map((metric) => (
-                        <ReportMetric
-                          key={metric.label}
-                          label={metric.label}
-                          value={
-                            metric.kind === 'money' ? money(metric.value) : String(metric.value)
-                          }
-                          emphasized={metric.emphasized}
-                        />
-                      ))}
-                    </div>
-                  </section>
-                ))}
+                {getSalesReportDisplaySections(report.totals, summaryGroups, report.taxTotals).map(
+                  (section) => (
+                    <section
+                      className={`sales-summary-section sales-summary-section--${section.id}`}
+                      aria-labelledby={`sales-summary-${section.id}`}
+                      key={section.id}
+                    >
+                      <h2 className="sales-summary-heading" id={`sales-summary-${section.id}`}>
+                        {section.label}
+                      </h2>
+                      {section.metrics.length > 0 ? (
+                        <div className="sales-report-summary-grid">
+                          {section.metrics.map((metric) => (
+                            <ReportMetric
+                              key={metric.label}
+                              label={metric.label}
+                              value={
+                                metric.kind === 'money' ? money(metric.value) : String(metric.value)
+                              }
+                              emphasized={metric.emphasized}
+                            />
+                          ))}
+                        </div>
+                      ) : section.emptyMessage ? (
+                        <p className="sales-summary-empty" role="status">
+                          {section.emptyMessage}
+                        </p>
+                      ) : null}
+                    </section>
+                  )
+                )}
               </div>
               <p className="sales-report-count" role="status">
                 Showing {report.totals.transactionCount}{' '}
@@ -679,7 +687,7 @@ function SalesScreen(): React.JSX.Element {
                                             }
                                           >
                                             <td>{product.name}</td>
-                                            <td>{product.sku}</td>
+                                            <td>{product.sku || '—'}</td>
                                             <td>{product.netQuantity}</td>
                                             <td>
                                               {currencyFormatter.format(
@@ -812,11 +820,11 @@ function SalesReportTypeDialog({
       <div className="sales-report-type-options">
         <button type="button" className="secondary-button" onClick={() => onSelect('summary')}>
           <strong>Summary sales</strong>
-          <span>Totals, payment methods, tax breakdown, and item totals.</span>
+          <span>Summary cards only.</span>
         </button>
         <button type="button" className="secondary-button" onClick={() => onSelect('itemized')}>
           <strong>Itemized</strong>
-          <span>The same summary plus every sale and return.</span>
+          <span>Summary cards, report details, and every sale and return.</span>
         </button>
         <div className="dialog-actions">
           <button className="secondary-button" type="button" onClick={onCancel}>
@@ -1009,7 +1017,7 @@ function SaleDetailView({ sale, onBack, onUpdated }: SaleDetailViewProps): React
           <tbody>
             {sale.items.map((item, index) => (
               <tr key={`${item.productId ?? 'removed'}-${index}`}>
-                <td className="product-sku">{item.sku}</td>
+                <td className="product-sku">{item.sku || '—'}</td>
                 <td className="product-name-cell">
                   {item.name}
                   {item.priceOverrideReason && (

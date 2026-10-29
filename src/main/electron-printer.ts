@@ -30,7 +30,7 @@ export async function printReceiptHtml(html: string, printerName: string): Promi
     const noScrollHtml = html
       .replace(
         '</head>',
-        '<style>body{max-width:42mm!important;margin:0 auto!important;padding:0!important;font-weight:500!important;letter-spacing:0.25px!important;-webkit-font-smoothing:antialiased!important}h1{font-weight:600!important;letter-spacing:0.5px!important}html,body{overflow:hidden!important;scrollbar-width:none!important}::-webkit-scrollbar{display:none!important}</style></head>'
+        '<style>body{max-width:42mm!important;margin:0 auto!important;padding:0!important;font-weight:var(--receipt-font-weight)!important;letter-spacing:0.25px!important;-webkit-font-smoothing:antialiased!important}h1{font-weight:var(--receipt-title-font-weight)!important;letter-spacing:0.5px!important}html,body{overflow:hidden!important;scrollbar-width:none!important}::-webkit-scrollbar{display:none!important}</style></head>'
       )
       .replace(
         '<header>',

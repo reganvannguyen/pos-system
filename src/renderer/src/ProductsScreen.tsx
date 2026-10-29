@@ -12,7 +12,11 @@ const currencyFormatter = new Intl.NumberFormat('en-CA', {
   currency: 'CAD'
 })
 
-function ProductsScreen(): React.JSX.Element {
+interface ProductsScreenProps {
+  onAddToCart: (product: Product) => void
+}
+
+function ProductsScreen({ onAddToCart }: ProductsScreenProps): React.JSX.Element {
   const [status, setStatus] = useState<ProductStatus>('active')
   const [query, setQuery] = useState('')
   const [products, setProducts] = useState<Product[]>([])
@@ -234,6 +238,15 @@ function ProductsScreen(): React.JSX.Element {
                     </td>
                     <td>
                       <div className="product-row-actions">
+                        {product.isActive && (
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={() => onAddToCart(product)}
+                          >
+                            Add to cart
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="text-button"

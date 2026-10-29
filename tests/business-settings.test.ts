@@ -52,6 +52,10 @@ const schema =
   readFileSync(
     join(process.cwd(), 'src/main/database/migrations/012_transaction_customers.sql'),
     'utf8'
+  ) +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/013_receipt_font_weight.sql'),
+    'utf8'
   )
 
 test('reads defaults and trims business names', () => {
@@ -114,6 +118,33 @@ test('rejects blank business names and invalid or out-of-range tax rates', () =>
   }
 })
 
+test('validates and saves supported receipt font weights', () => {
+  const database = createDatabase()
+  try {
+    const service = createBusinessSettingsService(createSettingsRepository(database))
+    for (const receiptFontWeight of [300, 400, 500, 600, 700]) {
+      assert.equal(
+        service.save({ businessName: 'My Store', receiptFontWeight }).receiptFontWeight,
+        receiptFontWeight
+      )
+    }
+
+    for (const receiptFontWeight of [299, 350, 701, '400', null]) {
+      const result = toBusinessSettingsResult(() =>
+        service.save({ businessName: 'My Store', receiptFontWeight })
+      )
+      assert.equal(result.ok, false)
+      if (!result.ok) {
+        assert.equal(result.error.code, 'invalid-input')
+        assert.equal(result.error.field, 'receiptFontWeight')
+      }
+    }
+    assert.equal(service.save({ businessName: 'Legacy request' }).receiptFontWeight, 400)
+  } finally {
+    database.close()
+  }
+})
+
 test('business settings persist after reopening the existing database', () => {
   const directory = mkdtempSync(join(tmpdir(), 'pos-business-settings-'))
   const path = join(directory, 'settings.sqlite')
@@ -121,6 +152,7 @@ test('business settings persist after reopening the existing database', () => {
   database.exec(schema)
   createBusinessSettingsService(createSettingsRepository(database)).save({
     ...emptyBusinessSettings('Harbour Market'),
+    receiptFontWeight: 600,
     businessEmail: 'hello@harbour.example',
     businessAddress: '  496 Stetson Street  ',
     businessCity: ' Kelowna ',
@@ -146,7 +178,8 @@ test('business settings persist after reopening the existing database', () => {
       businessPhone: '(250) 712-9958',
       businessEmail: 'hello@harbour.example',
       businessGstNumber: '123456789RT0001',
-      businessWebsite: 'harbour.example'
+      businessWebsite: 'harbour.example',
+      receiptFontWeight: 600
     })
     assert.deepEqual(createTaxSettingsService(createTaxRepository(database)).get(), [
       { id: 1, name: 'PST', rateBasisPoints: 725 }
@@ -201,6 +234,28 @@ test('migration 006 adds optional receipt identity fields without changing store
   }
 })
 
+test('migration 013 adds the receipt font weight with a lighter default', () => {
+  const migration = readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/013_receipt_font_weight.sql'),
+    'utf8'
+  )
+  const schemaBeforeFontWeight = schema.replace(migration, '')
+  const database = new Database(':memory:')
+  try {
+    database.exec(schemaBeforeFontWeight)
+    database.pragma('user_version = 12')
+    database.prepare('UPDATE settings SET business_name = ? WHERE id = 1').run('Old Store')
+    database.exec(migration)
+    database.pragma('user_version = 13')
+
+    const settings = createSettingsRepository(database).get()
+    assert.equal(settings.business_name, 'Old Store')
+    assert.equal(settings.receipt_font_weight, 400)
+  } finally {
+    database.close()
+  }
+})
+
 test('updated tax affects the next quote while saved sale and receipt snapshots remain historical', async () => {
   const database = createDatabase()
   try {
@@ -234,6 +289,7 @@ test('updated tax affects the next quote while saved sale and receipt snapshots 
 
     settingsService.save({
       ...emptyBusinessSettings('Second Shop'),
+      receiptFontWeight: 700,
       businessAddress: '99 New Street',
       businessCity: 'Kelowna',
       businessProvince: 'BC',
@@ -264,6 +320,7 @@ test('updated tax affects the next quote while saved sale and receipt snapshots 
       deletePdf: async () => {},
       openEmailDraft: async () => false,
       openExternal: async () => {},
+      openPath: async () => '',
       showItemInFolder: () => {}
     })
     await receipts.saveSettings({ printerName: 'Receipt_Printer' })
@@ -273,6 +330,9 @@ test('updated tax affects the next quote while saved sale and receipt snapshots 
     assert.equal(historical.taxCents, 25)
     assert.equal(historical.items[0]?.name, 'Breakfast tea')
     assert.match(printedHtml, /Second Shop/)
+    assert.match(printedHtml, /--receipt-font-weight: 700/)
+    assert.match(printedHtml, /--receipt-title-font-weight: 800/)
+    assert.match(printedHtml, /--receipt-bold-font-weight: 900/)
     assert.match(printedHtml, /second@example.com/)
     assert.match(printedHtml, /99 New Street/)
     assert.match(printedHtml, /Breakfast tea/)
@@ -300,6 +360,7 @@ function emptyBusinessSettings(businessName: string) {
     businessPhone: '',
     businessEmail: '',
     businessGstNumber: '',
-    businessWebsite: ''
+    businessWebsite: '',
+    receiptFontWeight: 400
   }
 }

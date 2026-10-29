@@ -1,4 +1,4 @@
-import type { SalesReportTotals, SalesSummaryGroup } from './pos-api'
+import type { SalesReportTaxTotal, SalesReportTotals, SalesSummaryGroup } from './pos-api'
 
 export const salesSummaryGroups = [
   { value: 'overview', label: 'Overview' },
@@ -41,9 +41,10 @@ export interface SalesSummaryMetric {
 }
 
 export interface SalesSummarySection {
-  id: 'activity' | 'payments' | 'additional' | 'net-sales'
+  id: 'activity' | 'payments' | 'taxes' | 'additional' | 'net-sales'
   label: string
   metrics: SalesSummaryMetric[]
+  emptyMessage?: string
 }
 
 export function isSalesSummaryGroup(value: unknown): value is SalesSummaryGroup {
@@ -154,14 +155,18 @@ export function getSalesSummaryMetricsForGroups(
 
 export function getSalesReportDisplayMetrics(
   totals: SalesReportTotals,
-  optionalGroups: SalesSummaryGroup[]
+  optionalGroups: SalesSummaryGroup[],
+  taxTotals: SalesReportTaxTotal[] = []
 ): SalesSummaryMetric[] {
-  return getSalesReportDisplaySections(totals, optionalGroups).flatMap((section) => section.metrics)
+  return getSalesReportDisplaySections(totals, optionalGroups, taxTotals).flatMap(
+    (section) => section.metrics
+  )
 }
 
 export function getSalesReportDisplaySections(
   totals: SalesReportTotals,
-  optionalGroups: SalesSummaryGroup[]
+  optionalGroups: SalesSummaryGroup[],
+  taxTotals: SalesReportTaxTotal[] = []
 ): SalesSummarySection[] {
   const selectedOptionalGroups = optionalSalesSummaryGroups
     .filter((group) => optionalGroups.includes(group.value))
@@ -189,6 +194,16 @@ export function getSalesReportDisplaySections(
         getSalesSummaryMetrics(totals, 'etransfer')[0],
         getSalesSummaryMetrics(totals, 'check')[0]
       ]
+    },
+    {
+      id: 'taxes',
+      label: 'Taxes',
+      metrics: taxTotals.map((tax) => ({
+        label: tax.taxName,
+        value: tax.netTaxCents,
+        kind: 'money'
+      })),
+      ...(taxTotals.length === 0 && { emptyMessage: 'No tax recorded in this period.' })
     }
   ]
 

@@ -53,6 +53,10 @@ const schema =
   readFileSync(
     join(process.cwd(), 'src/main/database/migrations/012_transaction_customers.sql'),
     'utf8'
+  ) +
+  readFileSync(
+    join(process.cwd(), 'src/main/database/migrations/013_receipt_font_weight.sql'),
+    'utf8'
   )
 
 interface SalesTestContext {
@@ -573,6 +577,130 @@ test('checkout resolves current price and stores historical line snapshots', () 
     assert.equal(sale.sale.items[0]?.unitPriceCents, 125)
     assert.equal(sale.sale.items[0]?.lineTotalCents, 250)
     assert.deepEqual(historicalSale.items, sale.sale.items)
+  })
+})
+
+test('custom sale items use configured taxes and save snapshots without catalog products', () => {
+  withSales(({ database, taxes, service }) => {
+    taxes.save([{ name: 'GST', rateBasisPoints: 500 }])
+    const items = [
+      {
+        customItem: { name: '  Photo Studio Shoot  ', unitPriceCents: 2000 },
+        quantity: 2,
+        priceOverride: { unitPriceCents: 1800, reason: 'Package rate' }
+      }
+    ]
+    const quote = service.quote(items)
+
+    assert.deepEqual(quote.items[0], {
+      productId: null,
+      sku: '',
+      name: 'Photo Studio Shoot',
+      catalogUnitPriceCents: 2000,
+      unitPriceCents: 1800,
+      priceOverrideReason: 'Package rate',
+      quantity: 2,
+      lineTotalCents: 3600
+    })
+    assert.equal(quote.subtotalCents, 3600)
+    assert.equal(quote.taxCents, 180)
+    assert.equal(quote.totalCents, 3780)
+
+    const sale = service.completeCheckout({
+      items,
+      tenders: [{ type: 'cash', amountCents: 3780 }]
+    }).sale
+    assert.equal(sale.items[0]?.productId, null)
+    assert.equal(sale.items[0]?.sku, '')
+    assert.equal(sale.items[0]?.name, 'Photo Studio Shoot')
+    assert.equal(sale.items[0]?.originalUnitPriceCents, 2000)
+    assert.equal(sale.items[0]?.unitPriceCents, 1800)
+    assert.equal(sale.items[0]?.priceOverrideReason, 'Package rate')
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM products').get()?.count, 0)
+
+    setSaleTimestamp(database, sale.id, localTimestamp(2025, 3, 9))
+    assert.deepEqual(service.productsForDay('2025-03-09'), [
+      {
+        productId: null,
+        sku: '',
+        name: 'Photo Studio Shoot',
+        netQuantity: 2,
+        netAmountCents: 3600
+      }
+    ])
+  })
+})
+
+test('custom return items use configured taxes and never restock products', () => {
+  withSales(({ database, taxes, service }) => {
+    taxes.save([{ name: 'GST', rateBasisPoints: 500 }])
+    const items = [
+      {
+        customItem: { name: 'Photo Studio Shoot', unitPriceCents: 2000 },
+        quantity: 2,
+        restock: false as const
+      }
+    ]
+    const quote = service.quoteReturn({ reason: 'Manual refund', items })
+    assert.equal(quote.subtotalCents, -4000)
+    assert.equal(quote.taxCents, -200)
+    assert.equal(quote.totalCents, -4200)
+    assert.equal(quote.items[0]?.productId, null)
+    assert.equal(quote.items[0]?.restock, false)
+
+    const returned = service.completeReturn({
+      reason: 'Manual refund',
+      items,
+      tenders: [{ type: 'cash', amountCents: 4200 }]
+    }).return
+    assert.equal(returned.totalCents, -4200)
+    assert.equal(returned.returnReason, 'Manual refund')
+    assert.deepEqual(
+      returned.items.map((item) => [
+        item.productId,
+        item.sku,
+        item.name,
+        item.unitPriceCents,
+        item.lineTotalCents,
+        item.restockRequested,
+        item.restockedQuantity
+      ]),
+      [[null, '', 'Photo Studio Shoot', -2000, -4000, false, 0]]
+    )
+    assert.equal(returned.payments[0]?.amountAppliedCents, -4200)
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM products').get()?.count, 0)
+  })
+})
+
+test('validates custom item names, amounts, and return restocking at the service boundary', () => {
+  withSales(({ service }) => {
+    assertSaleError(
+      toSalesResult(() =>
+        service.quote([{ customItem: { name: '  ', unitPriceCents: 100 }, quantity: 1 }])
+      ),
+      'invalid-input'
+    )
+    assertSaleError(
+      toSalesResult(() =>
+        service.quote([{ customItem: { name: 'Photo Shoot', unitPriceCents: -1 }, quantity: 1 }])
+      ),
+      'invalid-input'
+    )
+    assertSaleError(
+      toSalesResult(() =>
+        service.quoteReturn({
+          reason: 'Manual refund',
+          items: [
+            {
+              customItem: { name: 'Photo Shoot', unitPriceCents: 100 },
+              quantity: 1,
+              restock: true
+            }
+          ]
+        })
+      ),
+      'invalid-input'
+    )
   })
 })
 
@@ -1576,9 +1704,11 @@ test('sales reports and PDFs include net transaction totals and tax totals by ta
     assert.equal(pdfFileName, 'sales-summary-2025-03-09.pdf')
     assert.match(pdfHtml, /Summary sales report/)
     assert.doesNotMatch(pdfHtml, /<h2>Transactions<\/h2>/)
-    assert.match(pdfHtml, /Tax totals by type/)
-    assert.match(pdfHtml, /Payments received by tender/)
-    assert.match(pdfHtml, /Item totals for the period/)
+    assert.doesNotMatch(pdfHtml, /<h2>Tax totals by type<\/h2>/)
+    assert.doesNotMatch(pdfHtml, /<h2>Payments received by tender<\/h2>/)
+    assert.doesNotMatch(pdfHtml, /<h2>Item totals for the period<\/h2>/)
+    assert.doesNotMatch(pdfHtml, /<h2>Charge repayments received in this period<\/h2>/)
+    assert.match(pdfHtml, /<section class="summary-section">[\s\S]*<\/section>\s*<\/body>/)
   })
 })
 
@@ -1743,24 +1873,23 @@ test('PDF item totals allocate tax and split tenders by product and date charge 
       }
     )
     await exporter.exportPdf(period, [], 'summary')
-    assert.match(pdfHtml, /<h2>Item totals for the period<\/h2>/)
-    assert.match(pdfHtml, /GST tax/)
-    assert.match(pdfHtml, /PST tax/)
-    assert.match(pdfHtml, /Charge at sale/)
-    assert.match(pdfHtml, /<h2>Charge repayments received in this period<\/h2>/)
-    assert.match(pdfHtml, /E-transfer/)
-    assert.match(pdfHtml, /Check/)
-    assert.match(pdfHtml, /Total repayments/)
-    assert.match(pdfHtml, /10\/03\/25/)
-    assert.match(pdfHtml, /Charge shows the amount left unpaid at sale/)
-    assert.match(pdfHtml, /<td class="number">\$22\.51<\/td>/)
+    assert.match(pdfHtml, /Summary sales report/)
+    assert.doesNotMatch(pdfHtml, /<h2>Item totals for the period<\/h2>/)
+    assert.doesNotMatch(pdfHtml, /<h2>Charge repayments received in this period<\/h2>/)
 
     await exporter.exportPdf(period, [], 'itemized')
     assert.match(pdfHtml, /Itemized sales report/)
     assert.match(pdfHtml, /<h2>Transactions<\/h2>/)
+    assert.match(pdfHtml, /<h2>Item totals for the period<\/h2>/)
     assert.match(pdfHtml, /GST tax/)
+    assert.match(pdfHtml, /PST tax/)
     assert.match(pdfHtml, /Charge at sale/)
     assert.match(pdfHtml, /Total repayments/)
+    assert.match(pdfHtml, /E-transfer/)
+    assert.match(pdfHtml, /Check/)
+    assert.match(pdfHtml, /10\/03\/25/)
+    assert.match(pdfHtml, /Charge shows the amount left unpaid at sale/)
+    assert.match(pdfHtml, /<td class="number">\$22\.51<\/td>/)
   })
 })
 
@@ -1863,6 +1992,46 @@ test('PDF report includes selected summaries, signed transaction details, and es
   }
 })
 
+test('PDF product summaries show a dash for one-time items without a SKU', async () => {
+  const previousTimeZone = process.env.TZ
+  process.env.TZ = 'America/Vancouver'
+
+  try {
+    await withSales(async ({ database, service }) => {
+      const sale = service.completeCheckout({
+        items: [
+          {
+            customItem: { name: 'Photo Studio Shoot', unitPriceCents: 2500 },
+            quantity: 1
+          }
+        ],
+        tenders: [{ type: 'cash', amountCents: 2500 }]
+      }).sale
+      setSaleTimestamp(database, sale.id, localTimestamp(2025, 3, 9))
+
+      let savedHtml = ''
+      const exporter = createSalesExportService(
+        service,
+        async () => true,
+        async (_fileName, html) => {
+          savedHtml = html
+          return true
+        }
+      )
+      const result = await exporter.exportPdf({ type: 'day', date: '2025-03-09' }, [], 'itemized')
+
+      assert.deepEqual(result, { canceled: false, rowCount: 1 })
+      assert.match(
+        savedHtml,
+        /<td>Photo Studio Shoot<\/td>\s*<td>—<\/td>\s*<td class="number">1<\/td>\s*<td class="number">\$25\.00<\/td>/
+      )
+    })
+  } finally {
+    if (previousTimeZone === undefined) delete process.env.TZ
+    else process.env.TZ = previousTimeZone
+  }
+})
+
 test('PDF export handles empty periods, canceled saves, invalid summary groups, and write failures', async () => {
   await withSales(async ({ service }) => {
     let emptyReportHtml = ''
@@ -1893,7 +2062,9 @@ test('PDF export handles empty periods, canceled saves, invalid summary groups, 
     assert.match(emptyReportHtml, /Summary sales report/)
     assert.doesNotMatch(emptyReportHtml, /<h2>Transactions<\/h2>/)
     assert.doesNotMatch(emptyReportHtml, /No transactions in this period/)
-    assert.match(emptyReportHtml, /Item totals for the period/)
+    assert.doesNotMatch(emptyReportHtml, /Item totals for the period/)
+    assert.doesNotMatch(emptyReportHtml, /Payments received by tender/)
+    assert.doesNotMatch(emptyReportHtml, /Tax totals by type/)
 
     assertSaleError(
       await toSalesResultAsync(() =>

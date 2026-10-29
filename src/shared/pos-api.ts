@@ -35,7 +35,8 @@ export const IPC_CHANNELS = {
   receiptsPrintTest: 'receipts:print-test',
   receiptsEmailDraft: 'receipts:email-draft',
   receiptsTextDraft: 'receipts:text-draft',
-  receiptsOpenPdf: 'receipts:open-pdf'
+  receiptsOpenPdf: 'receipts:open-pdf',
+  receiptsViewPdf: 'receipts:view-pdf'
 } as const
 
 export type ProductStatus = 'active' | 'inactive'
@@ -144,10 +145,27 @@ export interface PriceOverrideInput {
   reason: string
 }
 
-export interface CheckoutItem {
+export interface CustomItemInput {
+  name: string
+  unitPriceCents: number
+}
+
+export type CheckoutItem =
+  | {
+      productId: number
+      quantity: number
+      priceOverride?: PriceOverrideInput
+    }
+  | {
+      customItem: CustomItemInput
+      quantity: number
+      priceOverride?: PriceOverrideInput
+    }
+
+export interface CatalogReturnItemInput {
   productId: number
   quantity: number
-  priceOverride?: PriceOverrideInput
+  restock: boolean
 }
 
 export interface TenderInput {
@@ -162,11 +180,8 @@ export interface CheckoutRequest {
   chargeRemainingBalance?: boolean
 }
 
-export interface ReturnItemInput {
-  productId: number
-  quantity: number
-  restock: boolean
-}
+export type ReturnItemInput =
+  CatalogReturnItemInput | { customItem: CustomItemInput; quantity: number; restock: false }
 
 export interface ReturnQuoteRequest {
   items: ReturnItemInput[]
@@ -179,7 +194,7 @@ export interface ReturnRequest extends ReturnQuoteRequest {
 }
 
 export interface CheckoutQuoteItem {
-  productId: number
+  productId: number | null
   sku: string
   name: string
   catalogUnitPriceCents: number
@@ -377,6 +392,7 @@ export interface ReceiptBusinessDetails {
   businessEmail: string
   businessGstNumber: string
   businessWebsite: string
+  receiptFontWeight: number
 }
 
 export type BusinessSettings = ReceiptBusinessDetails
@@ -547,5 +563,6 @@ export interface PosApi {
     emailDraft(saleId: number, recipient: string): Promise<ReceiptResult<ReceiptEmailDraftResult>>
     textDraft(saleId: number, recipient: string): Promise<ReceiptResult<ReceiptTextDraftResult>>
     openPdf(saleId: number): Promise<ReceiptResult<ReceiptPdfResult>>
+    viewPdf(saleId: number): Promise<ReceiptResult<ReceiptPdfResult>>
   }
 }

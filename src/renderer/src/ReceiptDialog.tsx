@@ -136,6 +136,22 @@ function ReceiptDialog({ sale, onClose }: ReceiptDialogProps): React.JSX.Element
     }
   }
 
+  async function viewReceipt(): Promise<void> {
+    if (working) return
+    setWorking(true)
+    setError('')
+    setNotice('')
+    try {
+      const result = await window.pos.receipts.viewPdf(sale.id)
+      if (!result.ok) setError(result.error.message)
+      else setNotice('Receipt opened in the PDF viewer.')
+    } catch {
+      setError('The receipt PDF could not be opened.')
+    } finally {
+      setWorking(false)
+    }
+  }
+
   async function copy(value: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(value)
@@ -194,6 +210,14 @@ function ReceiptDialog({ sale, onClose }: ReceiptDialogProps): React.JSX.Element
               : sale.transactionType === 'return'
                 ? 'Print return receipt'
                 : 'Print receipt'}
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={working}
+            onClick={() => void viewReceipt()}
+          >
+            View receipt
           </button>
           <button
             className="secondary-button"

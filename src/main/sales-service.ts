@@ -505,34 +505,25 @@ function parseItems(value: unknown): CheckoutItem[] {
     if (!isRecord(item)) {
       throw new SalesServiceError('invalid-input', 'The cart contains an invalid item.')
     }
-    const { productId, quantity } = parseProductAndQuantity(item)
+    const quantity = parseQuantity(item.quantity)
+    const priceOverride = parsePriceOverride(item.priceOverride)
+
+    if ('customItem' in item) {
+      if ('productId' in item) {
+        throw new SalesServiceError('invalid-input', 'The cart contains an invalid item.')
+      }
+      return {
+        customItem: parseCustomItem(item.customItem),
+        quantity,
+        ...(priceOverride && { priceOverride })
+      }
+    }
+
+    const productId = parseProductId(item.productId)
     if (seenProductIds.has(productId)) {
       throw new SalesServiceError('invalid-input', 'Each product can appear only once in the cart.')
     }
     seenProductIds.add(productId)
-    let priceOverride: CheckoutItem['priceOverride']
-    if (item.priceOverride !== undefined) {
-      if (!isRecord(item.priceOverride)) {
-        throw new SalesServiceError('invalid-input', 'Enter a valid transaction price override.')
-      }
-      if (
-        typeof item.priceOverride.unitPriceCents !== 'number' ||
-        !Number.isSafeInteger(item.priceOverride.unitPriceCents) ||
-        item.priceOverride.unitPriceCents < 0
-      ) {
-        throw new SalesServiceError(
-          'invalid-input',
-          'An override price must be a non-negative amount with up to two decimal places.'
-        )
-      }
-      if (typeof item.priceOverride.reason !== 'string' || !item.priceOverride.reason.trim()) {
-        throw new SalesServiceError('invalid-input', 'Enter a reason for the price change.')
-      }
-      priceOverride = {
-        unitPriceCents: item.priceOverride.unitPriceCents,
-        reason: item.priceOverride.reason.trim()
-      }
-    }
     return { productId, quantity, ...(priceOverride && { priceOverride }) }
   })
 }
@@ -566,7 +557,18 @@ function parseReturnRequest(
         'Return prices must use the current catalog price.'
       )
     }
-    const { productId, quantity } = parseProductAndQuantity(item)
+    const quantity = parseQuantity(item.quantity)
+    if ('customItem' in item) {
+      if ('productId' in item || item.restock !== false) {
+        throw new SalesServiceError('invalid-input', 'Custom return items cannot be restocked.')
+      }
+      return {
+        customItem: parseCustomItem(item.customItem),
+        quantity,
+        restock: false as const
+      }
+    }
+    const productId = parseProductId(item.productId)
     if (typeof item.restock !== 'boolean') {
       throw new SalesServiceError('invalid-input', 'Choose whether to restock each returned item.')
     }
@@ -588,28 +590,56 @@ function parseReturnRequest(
   }
 }
 
-function parseProductAndQuantity(item: Record<string, unknown>): {
-  productId: number
-  quantity: number
-} {
-  if (
-    typeof item.productId !== 'number' ||
-    !Number.isSafeInteger(item.productId) ||
-    item.productId < 1
-  ) {
+function parseProductId(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
     throw new SalesServiceError('invalid-input', 'The cart contains an invalid product.')
   }
-  if (
-    typeof item.quantity !== 'number' ||
-    !Number.isSafeInteger(item.quantity) ||
-    item.quantity < 1
-  ) {
+  return value
+}
+
+function parseQuantity(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
     throw new SalesServiceError(
       'invalid-input',
       'Product quantities must be whole numbers above zero.'
     )
   }
-  return { productId: item.productId, quantity: item.quantity }
+  return value
+}
+
+function parseCustomItem(value: unknown): { name: string; unitPriceCents: number } {
+  if (!isRecord(value) || typeof value.name !== 'string' || !value.name.trim()) {
+    throw new SalesServiceError('invalid-input', 'Enter a name for the custom item.')
+  }
+  if (
+    typeof value.unitPriceCents !== 'number' ||
+    !Number.isSafeInteger(value.unitPriceCents) ||
+    value.unitPriceCents < 0
+  ) {
+    throw new SalesServiceError('invalid-input', 'Enter a non-negative price for the custom item.')
+  }
+  return { name: value.name.trim(), unitPriceCents: value.unitPriceCents }
+}
+
+function parsePriceOverride(value: unknown): CheckoutItem['priceOverride'] {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) {
+    throw new SalesServiceError('invalid-input', 'Enter a valid transaction price override.')
+  }
+  if (
+    typeof value.unitPriceCents !== 'number' ||
+    !Number.isSafeInteger(value.unitPriceCents) ||
+    value.unitPriceCents < 0
+  ) {
+    throw new SalesServiceError(
+      'invalid-input',
+      'An override price must be a non-negative amount with up to two decimal places.'
+    )
+  }
+  if (typeof value.reason !== 'string' || !value.reason.trim()) {
+    throw new SalesServiceError('invalid-input', 'Enter a reason for the price change.')
+  }
+  return { unitPriceCents: value.unitPriceCents, reason: value.reason.trim() }
 }
 
 function parseTenders(value: unknown, isReturn = false): TenderInput[] {

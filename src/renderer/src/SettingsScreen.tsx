@@ -19,7 +19,8 @@ const emptyBusinessSettings: BusinessSettingsInput = {
   businessPhone: '',
   businessEmail: '',
   businessGstNumber: '',
-  businessWebsite: ''
+  businessWebsite: '',
+  receiptFontWeight: 400
 }
 
 function SettingsScreen(): React.JSX.Element {
@@ -240,7 +241,10 @@ function SettingsScreen(): React.JSX.Element {
     setTaxNotice('')
   }
 
-  function updateBusinessField(field: BusinessSettingsField, value: string): void {
+  function updateBusinessField(
+    field: Exclude<BusinessSettingsField, 'receiptFontWeight'>,
+    value: string
+  ): void {
     setBusinessDetails((current) => ({ ...current, [field]: value }))
     setBusinessFieldErrors((current) => ({ ...current, [field]: undefined }))
     setBusinessError('')
@@ -474,6 +478,35 @@ function SettingsScreen(): React.JSX.Element {
                   disabled={businessSaving}
                   onChange={(value) => updateBusinessField('businessWebsite', value)}
                 />
+                <label
+                  className="settings-field receipt-font-weight-field"
+                  htmlFor="receipt-font-weight"
+                >
+                  <span>
+                    Font thickness <output>{businessDetails.receiptFontWeight}</output>
+                  </span>
+                  <input
+                    id="receipt-font-weight"
+                    type="range"
+                    min="300"
+                    max="700"
+                    step="100"
+                    value={businessDetails.receiptFontWeight}
+                    disabled={businessSaving}
+                    aria-label="Receipt font thickness"
+                    aria-valuetext={`${businessDetails.receiptFontWeight} font weight`}
+                    onChange={(event) => {
+                      const receiptFontWeight = Number(event.currentTarget.value)
+                      setBusinessDetails((current) => ({
+                        ...current,
+                        receiptFontWeight
+                      }))
+                      setBusinessError('')
+                      setBusinessNotice('')
+                    }}
+                  />
+                  <small className="settings-help">300 thinner · 700 thicker</small>
+                </label>
                 {businessError && (
                   <p className="product-banner-error" role="alert">
                     {businessError}
@@ -789,8 +822,8 @@ function SettingsScreen(): React.JSX.Element {
             <h2 id="backup-settings-title">Backup and Restore</h2>
             <p className="settings-copy">
               Save the full register to another drive each night at 2:00 AM. If the app misses that
-              time while closed, it backs up the next time it starts. Automatic backups are kept for
-              90 days; manual backups are kept until you remove them.
+              time while closed, it backs up the next time it starts. Automatic and manual backups
+              remain on the drive until you remove them.
             </p>
           </div>
         </div>

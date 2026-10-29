@@ -4,6 +4,7 @@ import {
   allocateReturnPayouts,
   allocateTenders,
   centsInput,
+  initialTenderAmount,
   parseCadCents,
   tenderLabel,
   totalTenderedCents
@@ -26,6 +27,12 @@ test('labels current credit tender and keeps legacy sale labels readable', () =>
   assert.equal(tenderLabel('credit'), 'Credit')
   assert.equal(tenderLabel('mastercard'), 'Mastercard')
   assert.equal(tenderLabel('visa'), 'Visa')
+})
+
+test('defaults cash sale entry to the balance due and leaves cash refunds blank', () => {
+  assert.equal(initialTenderAmount('cash', false, 1234), '12.34')
+  assert.equal(initialTenderAmount('debit', false, 1234), '12.34')
+  assert.equal(initialTenderAmount('cash', true, 1234), '')
 })
 
 test('allocates split tenders, tracks remaining, and allows cash change only', () => {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { access, copyFile, mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
+import { access, copyFile, mkdir, rename, rm, stat } from 'node:fs/promises'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, win32 } from 'node:path'
 import Database from 'better-sqlite3'
@@ -8,7 +8,6 @@ import type { PosDatabase } from './database/types'
 
 const automaticPrefix = 'POS-Backup-automatic-'
 const manualPrefix = 'POS-Backup-manual-'
-const automaticRetentionMs = 90 * 24 * 60 * 60 * 1000
 
 interface BackupConfig {
   destinationPath: string | null
@@ -144,7 +143,6 @@ export function createBackupService(options: BackupServiceOptions) {
       config.lastAttemptError = null
       if (kind === 'automatic') {
         config.lastAutomaticDate = localDateKey(attemptedAt)
-        await removeExpiredAutomaticBackups(destination, attemptedAt)
       }
       saveConfig(configPath, config)
       return getStatus()
@@ -360,22 +358,6 @@ function validateBackupDatabase(database: PosDatabase, supportedVersion: number)
   )
   if (!['products', 'sales', 'settings'].every((table) => tables.has(table))) {
     throw new BackupServiceError('invalid-backup', 'The selected file is missing POS data tables.')
-  }
-}
-
-async function removeExpiredAutomaticBackups(destination: string, now: Date): Promise<void> {
-  const cutoff = now.getTime() - automaticRetentionMs
-  const entries = await readdir(destination, { withFileTypes: true })
-  for (const entry of entries) {
-    if (
-      !entry.isFile() ||
-      !entry.name.startsWith(automaticPrefix) ||
-      !entry.name.endsWith('.sqlite')
-    ) {
-      continue
-    }
-    const filePath = join(destination, entry.name)
-    if ((await stat(filePath)).mtimeMs < cutoff) await rm(filePath, { force: true })
   }
 }
 

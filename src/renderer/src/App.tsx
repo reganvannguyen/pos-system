@@ -4,8 +4,8 @@ import ProductsScreen from './ProductsScreen'
 import CustomersScreen from './CustomersScreen'
 import SalesScreen from './SalesScreen'
 import SettingsScreen from './SettingsScreen'
-import type { Customer } from '../../shared/pos-api'
-import type { CartLine } from './cart'
+import type { Customer, Product } from '../../shared/pos-api'
+import { addProductToCart, type CartLine } from './cart'
 import type { CheckoutSession } from './checkout'
 
 const adminViews = ['Products', 'Customers', 'Sales', 'Settings'] as const
@@ -56,6 +56,11 @@ function App(): React.JSX.Element {
     setActiveView(view)
     setMoreOpen(false)
     requestAnimationFrame(() => pageTitleRef.current?.focus())
+  }
+
+  function addProductFromCatalog(product: Product): void {
+    setCart((current) => addProductToCart(current, product))
+    navigateTo('POS')
   }
 
   return (
@@ -130,7 +135,7 @@ function App(): React.JSX.Element {
             onNavigateToProducts={() => navigateTo('Products')}
           />
         ) : activeView === 'Products' ? (
-          <ProductsScreen />
+          <ProductsScreen onAddToCart={addProductFromCatalog} />
         ) : activeView === 'Customers' ? (
           <CustomersScreen
             onCustomerChanged={(customer) => {

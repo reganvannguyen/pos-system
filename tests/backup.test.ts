@@ -24,13 +24,14 @@ const migrationNames = [
   '009_sale_charges.sql',
   '010_charge_payment_tenders.sql',
   '011_customers.sql',
-  '012_transaction_customers.sql'
+  '012_transaction_customers.sql',
+  '013_receipt_font_weight.sql'
 ]
 
-function createSchema(path: string, version = 12): Database.Database {
+function createSchema(path: string, version = 13): Database.Database {
   const database = new Database(path)
   database.pragma('foreign_keys = ON')
-  const migrationCount = version === 11 ? 11 : migrationNames.length
+  const migrationCount = Math.min(version, migrationNames.length)
   for (const name of migrationNames.slice(0, migrationCount)) {
     database.exec(readFileSync(join(process.cwd(), 'src/main/database/migrations', name), 'utf8'))
   }
@@ -49,13 +50,14 @@ function createService(
     database,
     databasePath,
     userDataPath,
-    supportedSchemaVersion: 12,
+    supportedSchemaVersion: 13,
     now,
     sameVolume: () => false,
     openStagedDatabase(path) {
       const staged = new Database(path)
       staged.pragma('foreign_keys = ON')
-      if ((staged.pragma('user_version', { simple: true }) as number) === 11) {
+      let stagedVersion = staged.pragma('user_version', { simple: true }) as number
+      if (stagedVersion === 11) {
         staged.exec(
           readFileSync(
             join(process.cwd(), 'src/main/database/migrations/012_transaction_customers.sql'),
@@ -63,6 +65,16 @@ function createService(
           )
         )
         staged.pragma('user_version = 12')
+        stagedVersion = 12
+      }
+      if (stagedVersion === 12) {
+        staged.exec(
+          readFileSync(
+            join(process.cwd(), 'src/main/database/migrations/013_receipt_font_weight.sql'),
+            'utf8'
+          )
+        )
+        staged.pragma('user_version = 13')
       }
       return staged
     }
@@ -198,7 +210,7 @@ test('creates a consistent full database snapshot from a WAL database', async ()
   })
 })
 
-test('retains automatic backups for 90 days and never prunes manual backups', async () => {
+test('keeps old automatic and manual backups until the user removes them', async () => {
   await withDirectory(async (directory) => {
     const databasePath = join(directory, 'pos-system.sqlite')
     const backupFolder = join(directory, 'external-drive')
@@ -221,9 +233,10 @@ test('retains automatic backups for 90 days and never prunes manual backups', as
       await service.setDestination(backupFolder)
       await service.runAutomatic()
       const files = await readdir(backupFolder)
-      assert.equal(files.includes('POS-Backup-automatic-old.sqlite'), false)
+      assert.equal(files.includes('POS-Backup-automatic-old.sqlite'), true)
       assert.equal(files.includes('POS-Backup-manual-old.sqlite'), true)
       assert.equal(files.includes('POS-Backup-automatic-recent.sqlite'), true)
+      assert.equal(files.length, 4)
     } finally {
       database.close()
     }
@@ -261,7 +274,7 @@ test('restores a complete snapshot over existing data and makes a safety copy fi
         restoredDatabase.prepare('SELECT image_data_url FROM customers').get().image_data_url,
         'img'
       )
-      assert.equal(restoredDatabase.pragma('user_version', { simple: true }), 12)
+      assert.equal(restoredDatabase.pragma('user_version', { simple: true }), 13)
     } finally {
       restoredDatabase.close()
     }
@@ -295,7 +308,7 @@ test('upgrades older supported backups and rejects corrupt or newer files withou
       .run()
     const corruptPath = join(directory, 'corrupt.sqlite')
     const newerPath = join(directory, 'newer.sqlite')
-    const newerDatabase = createSchema(newerPath, 13)
+    const newerDatabase = createSchema(newerPath, 14)
     const service = createService(currentDatabase, databasePath, join(directory, 'user-data'))
     try {
       await assert.rejects(service.restore(databasePath), (error: unknown) => {
@@ -322,7 +335,7 @@ test('upgrades older supported backups and rejects corrupt or newer files withou
       assert.equal(result.safetyCopyPath.endsWith('POS-Safety-Before-Restore.sqlite'), true)
       const restored = new Database(databasePath, { readonly: true })
       try {
-        assert.equal(restored.pragma('user_version', { simple: true }), 12)
+        assert.equal(restored.pragma('user_version', { simple: true }), 13)
         assert.equal(restored.prepare('SELECT customer_id FROM sales').get().customer_id, null)
       } finally {
         restored.close()

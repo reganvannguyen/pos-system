@@ -21,6 +21,7 @@ export interface ReceiptTemplateSale {
     amountAppliedCents: number
     changeCents: number
   }>
+  customer?: { name: string; companyName: string } | null
   charge?: {
     customer: {
       name: string
@@ -40,10 +41,13 @@ export function renderReceiptHtml(
   isPreview = false
 ): string {
   const isReturn = sale.transactionType === 'return'
+  const fontWeight = validReceiptFontWeight(business.receiptFontWeight)
+  const titleFontWeight = Math.min(fontWeight + 100, 900)
+  const boldFontWeight = Math.min(fontWeight + 200, 900)
   const items = sale.items
     .map(
       (item) => `<tr class="description-row">
-        <td class="description" colspan="3">${escapeHtml(item.description)}<small>SKU ${escapeHtml(item.sku)}</small></td>
+        <td class="description" colspan="3">${escapeHtml(item.description)}<small>SKU ${escapeHtml(item.sku || '—')}</small></td>
       </tr><tr class="amount-row">
         <td class="quantity">${item.quantity}</td>
         <td class="price">${formatItemMoney(item.unitPriceCents)}</td>
@@ -69,6 +73,11 @@ export function renderReceiptHtml(
   const chargePaymentTypes = sale.charge
     ? [paymentTypes, 'Charge'].filter(Boolean).join(' + ')
     : paymentTypes
+  const receiptCustomer = sale.charge
+    ? sale.charge.customer
+    : sale.customer
+      ? { ...sale.customer, address: '', phoneNumber: '', email: '' }
+      : null
   const dateTime = formatReceiptDateTime(sale.createdAt)
 
   return `<!doctype html>
@@ -79,18 +88,20 @@ export function renderReceiptHtml(
   <title>${isReturn ? 'Return' : 'Invoice'} #${escapeHtml(sale.transactionNumber)}</title>
   <style>
     @page { margin: 0; }
+    :root { --receipt-font-weight: ${fontWeight}; --receipt-title-font-weight: ${titleFontWeight}; --receipt-bold-font-weight: ${boldFontWeight}; }
     * { box-sizing: border-box; }
-    body { width: 100%; max-width: 48mm; margin: 0 auto; padding: 5mm 1mm 4mm; color: #000; font: 600 11px/1.35 Consolas, "Courier New", monospace; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body { width: 100%; max-width: 48mm; margin: 0 auto; padding: 5mm 1mm 4mm; color: #000; font: var(--receipt-font-weight) 11px/1.35 Consolas, "Courier New", monospace; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     header { text-align: center; margin-bottom: 9px; }
-    h1 { margin: 0 0 4px; font: 700 15px/1.3 Arial, sans-serif; overflow-wrap: anywhere; }
+    h1 { margin: 0 0 4px; font: var(--receipt-title-font-weight) 15px/1.3 Arial, sans-serif; overflow-wrap: anywhere; }
     p { margin: 2px 0; overflow-wrap: anywhere; }
+    strong { font-weight: var(--receipt-bold-font-weight); }
     .muted { color: #000; }
     .separator { border-top: 1px dashed #000; margin: 7px 0; }
     .invoice-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
-    .invoice-meta p:first-child { grid-column: 1 / -1; font-weight: 700; }
+    .invoice-meta p:first-child { grid-column: 1 / -1; font-weight: var(--receipt-bold-font-weight); }
     .invoice-number { display: inline-block; white-space: nowrap; }
     table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-    th { padding: 4px 0; border-top: 1px dashed #000; border-bottom: 1px dashed #000; text-align: left; font-size: 9px; }
+    th { padding: 4px 0; border-top: 1px dashed #000; border-bottom: 1px dashed #000; text-align: left; font-size: 9px; font-weight: var(--receipt-bold-font-weight); }
     td { padding: 5px 0; vertical-align: top; overflow-wrap: anywhere; }
     th:nth-child(1), td:nth-child(1) { width: 14%; text-align: center; }
     th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { width: 43%; text-align: right; padding-left: 4px; }
@@ -104,7 +115,7 @@ export function renderReceiptHtml(
     .totals span:last-child { flex-shrink: 0; white-space: nowrap; }
     .totals .payment-method span:last-child { flex-shrink: 1; min-width: 0; white-space: normal; text-align: right; overflow-wrap: anywhere; }
     .calibration { display: flex; justify-content: space-between; border: 1px solid #000; margin: 4px 0; font-size: 9px; }
-    .total { margin-top: 4px; padding-top: 5px !important; border-top: 1px solid #111; font-weight: 700; }
+    .total { margin-top: 4px; padding-top: 5px !important; border-top: 1px solid #111; font-weight: var(--receipt-bold-font-weight); }
     .payment-details { margin-top: 7px; }
     .customer-details { margin: 5px 0 9px; padding: 6px 0; border-top: 1px dashed #000; border-bottom: 1px dashed #000; }
     .customer-details strong { display: block; margin-bottom: 3px; }
@@ -128,14 +139,14 @@ export function renderReceiptHtml(
     </div>
   </header>
   ${
-    sale.charge
+    receiptCustomer
       ? `<section class="customer-details" aria-label="Customer details">
-    <strong>CHARGED TO</strong>
-    <p>${escapeHtml(sale.charge.customer.name)}</p>
-    ${sale.charge.customer.companyName ? `<p>${escapeHtml(sale.charge.customer.companyName)}</p>` : ''}
-    ${sale.charge.customer.address ? `<p>${escapeHtml(sale.charge.customer.address)}</p>` : ''}
-    ${sale.charge.customer.phoneNumber ? `<p>${escapeHtml(sale.charge.customer.phoneNumber)}</p>` : ''}
-    ${sale.charge.customer.email ? `<p>${escapeHtml(sale.charge.customer.email)}</p>` : ''}
+    <strong>${sale.charge ? 'CHARGED TO' : 'CUSTOMER'}</strong>
+    <p>${escapeHtml(receiptCustomer.name)}</p>
+    ${receiptCustomer.companyName && receiptCustomer.companyName !== receiptCustomer.name ? `<p>${escapeHtml(receiptCustomer.companyName)}</p>` : ''}
+    ${receiptCustomer.address ? `<p>${escapeHtml(receiptCustomer.address)}</p>` : ''}
+    ${receiptCustomer.phoneNumber ? `<p>${escapeHtml(receiptCustomer.phoneNumber)}</p>` : ''}
+    ${receiptCustomer.email ? `<p>${escapeHtml(receiptCustomer.email)}</p>` : ''}
   </section>`
       : ''
   }
@@ -156,7 +167,7 @@ export function renderReceiptHtml(
   <footer>
     ${business.businessGstNumber ? `<p>GST/HST #${escapeHtml(business.businessGstNumber)}</p>` : ''}
     ${business.businessWebsite ? `<p>${escapeHtml(business.businessWebsite)}</p>` : ''}
-    <p>${isReturn ? 'Return processed' : 'Thank you for your purchase'}</p>
+    <p>${isReturn ? 'Return processed' : 'Thank you'}</p>
   </footer>
 </body>
 </html>`
@@ -198,8 +209,8 @@ export function renderReceiptPreviewHtml(business: ReceiptBusinessDetails): stri
   )
 }
 
-export function renderCalibrationRulerSvg(): string {
-  return `<div class="calibration" style="display: flex; justify-content: space-between; font-size: 10px; font-weight: 700; border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 2px 0; margin: 4px 0;">
+export function renderCalibrationRulerSvg(fontWeight = 700): string {
+  return `<div class="calibration" style="display: flex; justify-content: space-between; font-size: 10px; font-weight: ${fontWeight}; border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 2px 0; margin: 4px 0;">
     <span>LEFT |</span>
     <span>• CENTERED •</span>
     <span>| RIGHT</span>
@@ -207,11 +218,12 @@ export function renderCalibrationRulerSvg(): string {
 }
 
 export function renderReceiptTestHtml(business: ReceiptBusinessDetails): string {
+  const boldFontWeight = Math.min(validReceiptFontWeight(business.receiptFontWeight) + 200, 900)
   return renderReceiptPreviewHtml(business)
     .replace('SAMPLE PREVIEW', 'TEST RECEIPT - NOT A SALE')
     .replace(
       '<div class="invoice-meta">',
-      `${renderCalibrationRulerSvg()}<div class="invoice-meta">`
+      `${renderCalibrationRulerSvg(boldFontWeight)}<div class="invoice-meta">`
     )
     .replace('</footer>', '<p>Amount check: $1,234.56</p></footer>')
 }
@@ -223,6 +235,10 @@ export function formatReceiptDateTime(value: string): { date: string; time: stri
 function formatLocality(business: ReceiptBusinessDetails): string {
   const cityProvince = [business.businessCity, business.businessProvince].filter(Boolean).join(', ')
   return [cityProvince, business.businessPostalCode].filter(Boolean).join(' ')
+}
+
+function validReceiptFontWeight(value: number): number {
+  return [300, 400, 500, 600, 700].includes(value) ? value : 400
 }
 
 function formatLocalDate(value: string): string {

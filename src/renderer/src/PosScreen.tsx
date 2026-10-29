@@ -11,17 +11,22 @@ import type {
 import ReceiptDialog from './ReceiptDialog'
 import { CustomerLookupDialog } from './CustomersScreen'
 import {
+  addCustomItemToCart,
   addProductToCart,
+  cartLineKey,
   changeCartQuantity,
   clearCart,
   overrideCartPrice,
-  removeCartProduct,
+  removeCartLine,
+  toCheckoutItem,
+  toReturnItem,
   type CartLine
 } from './cart'
 import {
   allocateReturnPayouts,
   allocateTenders,
   centsInput,
+  initialTenderAmount,
   parseCadCents,
   tenderLabel,
   totalTenderedCents,
@@ -72,6 +77,8 @@ interface QuoteState {
 }
 
 type QuoteItem = CheckoutQuote['items'][number]
+type PriceDialogLine = QuoteItem & { cartLineKey: string }
+type DisplayLine = (CartLine | PriceDialogLine) & { cartLineKey: string }
 
 function PosScreen({
   cart,
@@ -97,7 +104,8 @@ function PosScreen({
   const [chargeSelectionPending, setChargeSelectionPending] = useState(false)
   const [tenderDialogType, setTenderDialogType] = useState<TenderType | null>(null)
   const [paymentActive, setPaymentActive] = useState(false)
-  const [priceDialogLine, setPriceDialogLine] = useState<QuoteItem | null>(null)
+  const [customItemDialogOpen, setCustomItemDialogOpen] = useState(false)
+  const [priceDialogLine, setPriceDialogLine] = useState<PriceDialogLine | null>(null)
   const [lineSelectionMode, setLineSelectionMode] = useState<'remove' | 'price' | null>(null)
   const [selectedCartLineIndex, setSelectedCartLineIndex] = useState<number | null>(null)
   const [confirmTransaction, setConfirmTransaction] = useState(false)
@@ -108,7 +116,7 @@ function PosScreen({
   const inputRef = useRef<HTMLInputElement>(null)
   const registerRef = useRef<HTMLElement>(null)
   const clearCartButtonRef = useRef<HTMLButtonElement>(null)
-  const cartLineRowRefs = useRef(new Map<number, HTMLTableRowElement>())
+  const cartLineRowRefs = useRef(new Map<string, HTMLTableRowElement>())
   const addPaymentButtonRef = useRef<HTMLButtonElement>(null)
   const completeTransactionButtonRef = useRef<HTMLButtonElement>(null)
   const lookupQueue = useRef<Promise<void>>(Promise.resolve())
@@ -120,6 +128,7 @@ function PosScreen({
     quoteState.returnReason === returnReason &&
     quoteState.retryKey === quoteRetryKey
   const quote = quoteMatchesCurrentCart ? (quoteState.quote ?? null) : null
+  const zeroTotal = quote !== null && quote.totalCents === 0
   const returnReasonMissing = mode === 'return' && cart.length > 0 && !returnReason.trim()
   const quoteError = quoteMatchesCurrentCart
     ? (quoteState.error ?? '')
@@ -127,7 +136,12 @@ function PosScreen({
       ? 'Enter a reason for this return before calculating its refund.'
       : ''
   const quoteLoading = cart.length > 0 && !quoteMatchesCurrentCart && !returnReasonMissing
-  const displayLines = quote?.items ?? cart
+  const displayLines: DisplayLine[] = quote
+    ? quote.items.map((line, index) => ({
+        ...line,
+        cartLineKey: cartLineKey(cart[index]!)
+      }))
+    : cart.map((line) => ({ ...line, cartLineKey: cartLineKey(line) }))
   const tenders = checkoutSession?.tenders ?? emptyTenders
   const chargeRemainingBalance = checkoutSession?.chargeRemainingBalance === true
   const selectedCartLine =
@@ -152,9 +166,9 @@ function PosScreen({
     !quote || quoteLoading || pendingLookups > 0 || savingSale || lineSelectionMode !== null
   const focusCartLineAtIndex = useCallback(
     (index: number): void => {
-      const productId = cart[index]?.productId
-      if (productId === undefined) return
-      window.requestAnimationFrame(() => cartLineRowRefs.current.get(productId)?.focus())
+      const line = cart[index]
+      if (!line) return
+      window.requestAnimationFrame(() => cartLineRowRefs.current.get(cartLineKey(line))?.focus())
     },
     [cart]
   )
@@ -190,19 +204,9 @@ function PosScreen({
       mode === 'return'
         ? window.pos.sales.quoteReturn({
             reason: returnReason,
-            items: cart.map(({ productId, quantity, restock }) => ({
-              productId,
-              quantity,
-              restock: restock ?? false
-            }))
+            items: cart.map(toReturnItem)
           })
-        : window.pos.sales.quote(
-            cart.map(({ productId, quantity, priceOverride }) => ({
-              productId,
-              quantity,
-              ...(priceOverride && { priceOverride })
-            }))
-          )
+        : window.pos.sales.quote(cart.map(toCheckoutItem))
     void operation
       .then((result) => {
         if (!current) return
@@ -240,6 +244,7 @@ function PosScreen({
       !paymentMethodPickerOpen &&
       !customerLookupOpen &&
       !tenderDialogType &&
+      !customItemDialogOpen &&
       !priceDialogLine &&
       !confirmTransaction &&
       !receiptDialogSale &&
@@ -252,6 +257,7 @@ function PosScreen({
     paymentMethodPickerOpen,
     customerLookupOpen,
     tenderDialogType,
+    customItemDialogOpen,
     priceDialogLine,
     confirmTransaction,
     receiptDialogSale,
@@ -313,6 +319,12 @@ function PosScreen({
     hasPriceDialogLine,
     tenderDialogType
   ])
+
+  const openZeroTotalConfirmation = useCallback((): void => {
+    setPaymentActive(true)
+    setCheckoutSession({ tenders: [] })
+    setConfirmTransaction(true)
+  }, [setCheckoutSession])
 
   function beginChargeEntry(): void {
     if (mode !== 'sale' || checkoutDisabled || tenderSummary?.valid === false) return
@@ -410,7 +422,9 @@ function PosScreen({
 
     function handlePosShortcut(event: KeyboardEvent): void {
       const hasNoModifiers = !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
-      const reservedFunctionKey = ['F2', 'F3', 'F4', 'F5', 'F6', 'F8', 'F9'].includes(event.key)
+      const reservedFunctionKey = ['F2', 'F3', 'F4', 'F5', 'F6', 'F8', 'F9', 'F10'].includes(
+        event.key
+      )
       if (hasNoModifiers && reservedFunctionKey) event.preventDefault()
 
       if (lineSelectionMode !== null && hasNoModifiers) {
@@ -441,7 +455,7 @@ function PosScreen({
           if (!selectedLine) return
 
           if (lineSelectionMode === 'remove') {
-            setCart((current) => removeCartProduct(current, selectedLine.productId))
+            setCart((current) => removeCartLine(current, cartLineKey(selectedLine)))
             setLookupMessage(
               `${selectedLine.name} removed from the ${mode === 'return' ? 'return' : 'sale'}.`
             )
@@ -453,9 +467,11 @@ function PosScreen({
             setSelectedCartLineIndex(null)
             window.requestAnimationFrame(() => inputRef.current?.focus())
           } else {
-            const quotedLine = displayLines[selectedCartLineIndex ?? 0]
-            if (mode === 'sale' && quotedLine) {
-              setPriceDialogLine(quotedLine as QuoteItem)
+            const lineIndex = selectedCartLineIndex ?? 0
+            const selectedDisplayLine = displayLines[lineIndex]
+            const quotedLine = quote?.items[lineIndex]
+            if (mode === 'sale' && selectedDisplayLine && quotedLine) {
+              setPriceDialogLine({ ...quotedLine, cartLineKey: selectedDisplayLine.cartLineKey })
               setLineSelectionMode(null)
               setSelectedCartLineIndex(null)
             }
@@ -469,6 +485,7 @@ function PosScreen({
         customerLookupOpen ||
         paymentMethodPickerOpen ||
         tenderDialogType !== null ||
+        customItemDialogOpen ||
         priceDialogLine !== null ||
         confirmTransaction ||
         receiptDialogSale !== null ||
@@ -511,7 +528,12 @@ function PosScreen({
           mode === 'sale' &&
           quote !== null,
         paymentEnabled:
-          !checkoutDisabled && tenderSummary?.valid !== false && tenderSummary?.remainingCents !== 0
+          !checkoutDisabled &&
+          tenderSummary?.valid !== false &&
+          tenderSummary?.remainingCents !== 0,
+        zeroTotalSaleEnabled: mode === 'sale' && zeroTotal && !checkoutDisabled,
+        customItemEnabled:
+          !cartLocked && pendingLookups === 0 && !savingSale && lineSelectionMode === null
       })
 
       if (!action) return
@@ -533,6 +555,10 @@ function PosScreen({
         startLineSelection('price')
       } else if (action === 'open-payment') {
         openTenderPicker()
+      } else if (action === 'complete-zero-total-sale') {
+        openZeroTotalConfirmation()
+      } else if (action === 'open-custom-item') {
+        setCustomItemDialogOpen(true)
       }
     }
 
@@ -543,6 +569,7 @@ function PosScreen({
     cart,
     changeRegisterMode,
     checkoutDisabled,
+    customItemDialogOpen,
     displayLines,
     customerLookupOpen,
     focusCartLineAtIndex,
@@ -550,6 +577,7 @@ function PosScreen({
     mode,
     onNavigateToProducts,
     openTenderPicker,
+    openZeroTotalConfirmation,
     pendingLookups,
     paymentActive,
     paymentMethodPickerOpen,
@@ -564,7 +592,8 @@ function PosScreen({
     setSelectedCustomer,
     startLineSelection,
     tenderDialogType,
-    tenderSummary
+    tenderSummary,
+    zeroTotal
   ])
 
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
@@ -606,6 +635,18 @@ function PosScreen({
         inputRef.current?.focus()
       }
     })
+  }
+
+  function addCustomItem(name: string, unitPriceCents: number): void {
+    if (cartLocked || pendingLookups > 0 || savingSale) return
+    setCart((current) => addCustomItemToCart(current, name, unitPriceCents))
+    setCustomItemDialogOpen(false)
+    setLookupMessage(`${name} added to the ${mode === 'return' ? 'return' : 'sale'}.`)
+    setLookupIsError(false)
+    setCompletedSale(null)
+    setReceiptDialogSale(null)
+    setCheckoutError('')
+    window.requestAnimationFrame(() => inputRef.current?.focus())
   }
 
   function handleClearCart(): void {
@@ -748,7 +789,9 @@ function PosScreen({
 
   function applyPriceOverride(priceCents: number, reason: string): void {
     if (!priceDialogLine || cartLocked) return
-    setCart((current) => overrideCartPrice(current, priceDialogLine.productId, priceCents, reason))
+    setCart((current) =>
+      overrideCartPrice(current, priceDialogLine.cartLineKey, priceCents, reason)
+    )
     setPriceDialogLine(null)
     setLookupMessage(`Price updated for ${priceDialogLine.name} in this sale.`)
     setLookupIsError(false)
@@ -771,11 +814,7 @@ function PosScreen({
       let transaction: SaleDetail
       if (mode === 'return') {
         const result = await window.pos.sales.completeReturn({
-          items: cart.map(({ productId, quantity, restock }) => ({
-            productId,
-            quantity,
-            restock: restock ?? false
-          })),
+          items: cart.map(toReturnItem),
           reason: returnReason,
           tenders,
           ...(selectedCustomer && { customerId: selectedCustomer.id })
@@ -789,11 +828,7 @@ function PosScreen({
         transaction = result.data.return
       } else {
         const result = await window.pos.sales.completeCheckout({
-          items: cart.map(({ productId, quantity, priceOverride }) => ({
-            productId,
-            quantity,
-            ...(priceOverride && { priceOverride })
-          })),
+          items: cart.map(toCheckoutItem),
           tenders,
           ...(selectedCustomer && { customerId: selectedCustomer.id }),
           ...(chargeRemainingBalance && { chargeRemainingBalance: true })
@@ -834,7 +869,6 @@ function PosScreen({
   const subtotal = cart.length === 0 ? 0 : quote?.subtotalCents
   const tax = cart.length === 0 ? 0 : quote?.taxCents
   const total = cart.length === 0 ? 0 : quote?.totalCents
-  const zeroTotal = quote !== null && quote.totalCents === 0
   const transactionName = mode === 'return' ? 'return' : 'sale'
 
   return (
@@ -911,8 +945,8 @@ function PosScreen({
             required
           />
           <p>
-            Refunds use the current catalog price and tax rates. Card refunds must be processed on
-            the terminal.
+            Catalog items use current prices; F10 amounts are entered manually. All refunds use the
+            configured tax rates. Card refunds must be processed on the terminal.
           </p>
         </div>
       )}
@@ -981,8 +1015,8 @@ function PosScreen({
                 <strong>
                   {lineSelectionMode === 'remove' ? 'Remove item' : 'Edit item price'}:
                 </strong>{' '}
-                {selectedCartLine.name} ({selectedCartLine.sku}) · {selectedCartLineIndex + 1} of{' '}
-                {cart.length}
+                {selectedCartLine.name} ({selectedCartLine.sku || '—'}) ·{' '}
+                {selectedCartLineIndex + 1} of {cart.length}
                 <span>
                   Use ↑/↓ to choose · Enter to{' '}
                   {lineSelectionMode === 'remove' ? 'remove' : 'edit price'} · Esc to cancel
@@ -995,7 +1029,10 @@ function PosScreen({
                   ＋
                 </div>
                 <h3>No items yet</h3>
-                <p>Scan a product SKU to start a {transactionName}.</p>
+                <p>
+                  Scan a product SKU or press F10 to add a one-time{' '}
+                  {mode === 'return' ? 'refund item' : 'item'}.
+                </p>
               </div>
             ) : (
               <div className="pos-cart-content">
@@ -1030,10 +1067,10 @@ function PosScreen({
                           lineSelectionMode !== null && selectedCartLineIndex === lineIndex
                         return (
                           <tr
-                            key={line.productId}
+                            key={line.cartLineKey}
                             ref={(element) => {
-                              if (element) cartLineRowRefs.current.set(line.productId, element)
-                              else cartLineRowRefs.current.delete(line.productId)
+                              if (element) cartLineRowRefs.current.set(line.cartLineKey, element)
+                              else cartLineRowRefs.current.delete(line.cartLineKey)
                             }}
                             className={isKeyboardSelected ? 'is-keyboard-selected' : undefined}
                             tabIndex={isKeyboardSelected ? 0 : undefined}
@@ -1044,10 +1081,10 @@ function PosScreen({
                               isKeyboardSelected ? 'cart-line-selection-help' : undefined
                             }
                           >
-                            <td className="product-sku">{line.sku}</td>
+                            <td className="product-sku">{line.sku || '—'}</td>
                             <td className="product-name-cell">
                               {line.name}
-                              {mode === 'return' && (
+                              {mode === 'return' && line.productId !== null && (
                                 <label className="return-restock-checkbox">
                                   <input
                                     type="checkbox"
@@ -1057,7 +1094,7 @@ function PosScreen({
                                       const restock = event.currentTarget.checked
                                       setCart((current) =>
                                         current.map((entry) =>
-                                          entry.productId === line.productId
+                                          cartLineKey(entry) === line.cartLineKey
                                             ? { ...entry, restock }
                                             : entry
                                         )
@@ -1083,7 +1120,15 @@ function PosScreen({
                                   type="button"
                                   disabled={cartLocked || !quote}
                                   aria-label={`Change price for ${line.name}. Current price ${amount(line.unitPriceCents)}`}
-                                  onClick={() => setPriceDialogLine(line as QuoteItem)}
+                                  onClick={() => {
+                                    const quoteItem = quote?.items[lineIndex]
+                                    if (quoteItem) {
+                                      setPriceDialogLine({
+                                        ...quoteItem,
+                                        cartLineKey: line.cartLineKey
+                                      })
+                                    }
+                                  }}
                                 >
                                   {amount(line.unitPriceCents)}
                                 </button>
@@ -1105,7 +1150,7 @@ function PosScreen({
                                   disabled={line.quantity <= 1 || cartLocked}
                                   onClick={() =>
                                     setCart((current) =>
-                                      changeCartQuantity(current, line.productId, -1)
+                                      changeCartQuantity(current, line.cartLineKey, -1)
                                     )
                                   }
                                 >
@@ -1119,7 +1164,7 @@ function PosScreen({
                                   disabled={cartLocked}
                                   onClick={() =>
                                     setCart((current) =>
-                                      changeCartQuantity(current, line.productId, 1)
+                                      changeCartQuantity(current, line.cartLineKey, 1)
                                     )
                                   }
                                 >
@@ -1143,7 +1188,7 @@ function PosScreen({
                                 aria-label={`Remove ${line.name}`}
                                 disabled={cartLocked}
                                 onClick={() => {
-                                  setCart((current) => removeCartProduct(current, line.productId))
+                                  setCart((current) => removeCartLine(current, line.cartLineKey))
                                   window.requestAnimationFrame(() => inputRef.current?.focus())
                                 }}
                               >
@@ -1433,11 +1478,7 @@ function PosScreen({
                 ref={completeTransactionButtonRef}
                 type="button"
                 disabled={checkoutDisabled}
-                onClick={() => {
-                  setPaymentActive(true)
-                  setCheckoutSession({ tenders: [] })
-                  setConfirmTransaction(true)
-                }}
+                onClick={openZeroTotalConfirmation}
               >
                 {mode === 'return' ? 'Complete $0 Return' : 'Complete $0 Sale'}
               </button>
@@ -1497,6 +1538,10 @@ function PosScreen({
                 <kbd>F9</kbd>
                 <span>Add payment</span>
               </li>
+              <li>
+                <kbd>F10</kbd>
+                <span>Add custom item</span>
+              </li>
             </ul>
             <p className="shortcut-legend-help">
               F5/F6: use ↑/↓ to select an item, Enter to act, Esc to cancel · Tab to other controls
@@ -1510,6 +1555,16 @@ function PosScreen({
           line={priceDialogLine}
           onCancel={() => setPriceDialogLine(null)}
           onApply={applyPriceOverride}
+        />
+      )}
+      {customItemDialogOpen && (
+        <CustomItemDialog
+          isReturn={mode === 'return'}
+          onCancel={() => {
+            setCustomItemDialogOpen(false)
+            window.requestAnimationFrame(() => inputRef.current?.focus())
+          }}
+          onAdd={addCustomItem}
         />
       )}
       {paymentMethodPickerOpen && quote && (
@@ -1566,7 +1621,7 @@ function PosScreen({
 }
 
 interface PriceOverrideDialogProps {
-  line: QuoteItem
+  line: PriceDialogLine
   onCancel: () => void
   onApply: (priceCents: number, reason: string) => void
 }
@@ -1629,7 +1684,10 @@ function PriceOverrideDialog({
       </div>
       <form onSubmit={submit}>
         <div className="checkout-confirmation price-override-fields">
-          <p>Catalog price: {currencyFormatter.format(line.catalogUnitPriceCents / 100)}</p>
+          <p>
+            {line.productId === null ? 'Starting price' : 'Catalog price'}:{' '}
+            {currencyFormatter.format(line.catalogUnitPriceCents / 100)}
+          </p>
           <label>
             <span>New price (CAD)</span>
             <input
@@ -1662,6 +1720,112 @@ function PriceOverrideDialog({
           </button>
           <button className="primary-button" type="submit">
             Confirm price change
+          </button>
+        </div>
+      </form>
+    </dialog>
+  )
+}
+
+interface CustomItemDialogProps {
+  isReturn: boolean
+  onCancel: () => void
+  onAdd: (name: string, unitPriceCents: number) => void
+}
+
+function CustomItemDialog({ isReturn, onCancel, onAdd }: CustomItemDialogProps): React.JSX.Element {
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const [name, setName] = useState('')
+  const [price, setPrice] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (dialog && !dialog.open) dialog.showModal()
+    return () => {
+      if (dialog?.open) dialog.close()
+    }
+  }, [])
+
+  function submit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault()
+    if (!name.trim()) {
+      setError('Enter an item name.')
+      return
+    }
+    const unitPriceCents = parseCadCents(price)
+    if (unitPriceCents === null) {
+      setError('Enter a non-negative CAD amount with up to two decimal places.')
+      return
+    }
+    onAdd(name.trim(), unitPriceCents)
+  }
+
+  return (
+    <dialog
+      className="product-dialog checkout-dialog"
+      ref={dialogRef}
+      aria-labelledby="custom-item-title"
+      onCancel={(event) => {
+        event.preventDefault()
+        onCancel()
+      }}
+    >
+      <div className="dialog-heading">
+        <div>
+          <p className="eyebrow">One-time item</p>
+          <h2 id="custom-item-title">Add custom {isReturn ? 'refund item' : 'sale item'}</h2>
+        </div>
+        <button
+          className="dialog-close-button"
+          type="button"
+          aria-label="Cancel"
+          onClick={onCancel}
+        >
+          ×
+        </button>
+      </div>
+      <form onSubmit={submit}>
+        <div className="checkout-confirmation price-override-fields">
+          <label>
+            <span>Item name</span>
+            <input
+              autoFocus
+              value={name}
+              onChange={(event) => {
+                setName(event.target.value)
+                setError('')
+              }}
+              aria-label="Custom item name"
+            />
+          </label>
+          <label>
+            <span>{isReturn ? 'Unit refund amount (CAD)' : 'Unit price (CAD)'}</span>
+            <input
+              inputMode="decimal"
+              value={price}
+              onChange={(event) => {
+                setPrice(event.target.value)
+                setError('')
+              }}
+              aria-label={
+                isReturn ? 'Custom item refund amount in CAD' : 'Custom item price in CAD'
+              }
+            />
+          </label>
+          <p>This item is saved with this transaction only. No SKU is required.</p>
+          {error && (
+            <p className="product-banner-error" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
+        <div className="dialog-actions checkout-dialog-actions">
+          <button className="secondary-button" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="primary-button" type="submit">
+            Add item
           </button>
         </div>
       </form>
@@ -1803,7 +1967,7 @@ function TenderEntryDialog({
   const dialogRef = useRef<HTMLDialogElement>(null)
   const amountInputRef = useRef<HTMLInputElement>(null)
   const type = initialType
-  const [amount, setAmount] = useState(initialType === 'cash' ? '' : centsInput(remainingCents))
+  const [amount, setAmount] = useState(initialTenderAmount(initialType, isReturn, remainingCents))
   const [error, setError] = useState('')
 
   useEffect(() => {
