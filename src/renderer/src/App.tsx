@@ -15,6 +15,7 @@ function App(): React.JSX.Element {
   const [activeView, setActiveView] = useState<View>('POS')
   const [moreOpen, setMoreOpen] = useState(false)
   const [version, setVersion] = useState('Loading…')
+  const [companyName, setCompanyName] = useState('')
   const [cart, setCart] = useState<CartLine[]>([])
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
   const [checkoutSession, setCheckoutSession] = useState<CheckoutSession | null>(null)
@@ -29,6 +30,19 @@ function App(): React.JSX.Element {
       .getVersion()
       .then(setVersion)
       .catch(() => setVersion('Unavailable'))
+  }, [])
+
+  useEffect(() => {
+    let current = true
+    void window.pos.settings
+      .getBusiness()
+      .then((result) => {
+        if (current && result.ok) setCompanyName(result.data.businessName)
+      })
+      .catch(() => {})
+    return () => {
+      current = false
+    }
   }, [])
 
   useEffect(() => {
@@ -69,6 +83,11 @@ function App(): React.JSX.Element {
         className={`main-panel${activeView === 'POS' ? ' is-register-view' : ''}${activeView === 'Sales' ? ' is-sales-view' : ''}`}
       >
         <header className="topbar">
+          {companyName && (
+            <span className="topbar-company-name" title={companyName}>
+              {companyName}
+            </span>
+          )}
           <div className="topbar-title">
             <p className="eyebrow">POS system</p>
             <h1 ref={pageTitleRef} tabIndex={-1}>
@@ -76,47 +95,49 @@ function App(): React.JSX.Element {
             </h1>
           </div>
           <div className="topbar-actions">
-            <nav className="primary-navigation" aria-label="Main navigation">
-              <button
-                className={`topbar-nav-button${activeView === 'POS' ? ' is-active' : ''}`}
-                type="button"
-                aria-current={activeView === 'POS' ? 'page' : undefined}
-                onClick={() => navigateTo('POS')}
-              >
-                Register
-              </button>
-              <div className="more-menu-container" ref={moreContainerRef}>
+            <div className="topbar-action-controls">
+              <nav className="primary-navigation" aria-label="Main navigation">
                 <button
-                  ref={moreButtonRef}
-                  className={`topbar-nav-button${activeView !== 'POS' ? ' is-active' : ''}`}
+                  className={`topbar-nav-button${activeView === 'POS' ? ' is-active' : ''}`}
                   type="button"
-                  aria-expanded={moreOpen}
-                  aria-controls={moreOpen ? 'more-navigation' : undefined}
-                  onClick={() => setMoreOpen((open) => !open)}
+                  aria-current={activeView === 'POS' ? 'page' : undefined}
+                  onClick={() => navigateTo('POS')}
                 >
-                  More{' '}
-                  <span className="menu-caret" aria-hidden="true">
-                    ▾
-                  </span>
+                  Register
                 </button>
-                {moreOpen && (
-                  <nav id="more-navigation" className="more-menu" aria-label="More pages">
-                    {adminViews.map((view) => (
-                      <button
-                        className={`more-menu-item${activeView === view ? ' is-active' : ''}`}
-                        type="button"
-                        key={view}
-                        aria-current={activeView === view ? 'page' : undefined}
-                        onClick={() => navigateTo(view)}
-                      >
-                        {view === 'Sales' ? 'Sales History' : view}
-                      </button>
-                    ))}
-                  </nav>
-                )}
-              </div>
-            </nav>
-            <span className="version-label">Version {version}</span>
+                <div className="more-menu-container" ref={moreContainerRef}>
+                  <button
+                    ref={moreButtonRef}
+                    className={`topbar-nav-button${activeView !== 'POS' ? ' is-active' : ''}`}
+                    type="button"
+                    aria-expanded={moreOpen}
+                    aria-controls={moreOpen ? 'more-navigation' : undefined}
+                    onClick={() => setMoreOpen((open) => !open)}
+                  >
+                    More{' '}
+                    <span className="menu-caret" aria-hidden="true">
+                      ▾
+                    </span>
+                  </button>
+                  {moreOpen && (
+                    <nav id="more-navigation" className="more-menu" aria-label="More pages">
+                      {adminViews.map((view) => (
+                        <button
+                          className={`more-menu-item${activeView === view ? ' is-active' : ''}`}
+                          type="button"
+                          key={view}
+                          aria-current={activeView === view ? 'page' : undefined}
+                          onClick={() => navigateTo(view)}
+                        >
+                          {view === 'Sales' ? 'Sales History' : view}
+                        </button>
+                      ))}
+                    </nav>
+                  )}
+                </div>
+              </nav>
+              <span className="version-label">Version {version}</span>
+            </div>
           </div>
         </header>
 
@@ -145,7 +166,7 @@ function App(): React.JSX.Element {
         ) : activeView === 'Sales' ? (
           <SalesScreen />
         ) : (
-          <SettingsScreen />
+          <SettingsScreen onBusinessNameChange={setCompanyName} />
         )}
       </main>
     </div>

@@ -23,7 +23,11 @@ const emptyBusinessSettings: BusinessSettingsInput = {
   receiptFontWeight: 400
 }
 
-function SettingsScreen(): React.JSX.Element {
+interface SettingsScreenProps {
+  onBusinessNameChange: (businessName: string) => void
+}
+
+function SettingsScreen({ onBusinessNameChange }: SettingsScreenProps): React.JSX.Element {
   const [businessDetails, setBusinessDetails] =
     useState<BusinessSettingsInput>(emptyBusinessSettings)
   const [businessLoading, setBusinessLoading] = useState(true)
@@ -72,13 +76,14 @@ function SettingsScreen(): React.JSX.Element {
         return
       }
       setBusinessDetails(result.data)
+      onBusinessNameChange(result.data.businessName)
       setBusinessLoaded(true)
     } catch {
       setBusinessError('Receipt details could not be loaded. Try again.')
     } finally {
       setBusinessLoading(false)
     }
-  }, [])
+  }, [onBusinessNameChange])
 
   const loadTaxSettings = useCallback(async (): Promise<void> => {
     setTaxLoading(true)
@@ -196,6 +201,7 @@ function SettingsScreen(): React.JSX.Element {
         return
       }
       setBusinessDetails(result.data)
+      onBusinessNameChange(result.data.businessName)
       setBusinessLoaded(true)
       setBusinessNotice('Receipt details saved.')
     } catch {

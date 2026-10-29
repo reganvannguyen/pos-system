@@ -367,7 +367,7 @@ function PosScreen({
       setReceiptDialogSale(null)
       setSelectedCustomer(null)
       setMode(nextMode)
-      window.requestAnimationFrame(() => inputRef.current?.focus())
+      window.requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }))
     },
     [
       cart.length,
